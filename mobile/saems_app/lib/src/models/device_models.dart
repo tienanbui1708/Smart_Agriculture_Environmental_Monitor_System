@@ -1,4 +1,5 @@
 import 'telemetry.dart';
+import 'thresholds.dart';
 
 class DeviceStatus {
   const DeviceStatus({
@@ -32,6 +33,8 @@ class DeviceConfig {
     this.soilDryRaw,
     this.soilWetRaw,
     this.powerMode = 'direct',
+    this.configVersion = 0,
+    this.thresholds = const ThresholdConfig({}),
   });
 
   final String deviceId;
@@ -40,6 +43,10 @@ class DeviceConfig {
   final int? soilWetRaw;
   final String powerMode;
 
+  /// 0 means the device runs local (BLE/AP) settings.
+  final int configVersion;
+  final ThresholdConfig thresholds;
+
   factory DeviceConfig.fromJson(Map<String, dynamic> json) => DeviceConfig(
     deviceId: json['device_id']?.toString() ?? '',
     telemetryIntervalSeconds:
@@ -47,6 +54,8 @@ class DeviceConfig {
     soilDryRaw: int.tryParse(json['soil_dry_raw']?.toString() ?? ''),
     soilWetRaw: int.tryParse(json['soil_wet_raw']?.toString() ?? ''),
     powerMode: json['power_mode']?.toString() ?? 'direct',
+    configVersion: int.tryParse(json['config_version']?.toString() ?? '') ?? 0,
+    thresholds: ThresholdConfig.fromDeviceArray(json['thresholds']),
   );
 
   Map<String, dynamic> toJson() => {
@@ -55,6 +64,7 @@ class DeviceConfig {
     'soil_dry_raw': soilDryRaw,
     'soil_wet_raw': soilWetRaw,
     'power_mode': powerMode,
+    'thresholds': thresholds.toDeviceArray(),
   };
 }
 

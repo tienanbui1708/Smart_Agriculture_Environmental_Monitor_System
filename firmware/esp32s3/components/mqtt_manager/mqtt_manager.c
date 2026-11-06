@@ -24,10 +24,16 @@ static void mqtt_event_handler(
         manager->connected = true;
         int message_id = esp_mqtt_client_subscribe(
             manager->client, manager->command_topic, 1);
+        /* The server publishes the device configuration retained, so a
+         * reconnecting or waking device always receives the latest one. */
+        int config_message_id = esp_mqtt_client_subscribe(
+            manager->client, manager->config_topic, 1);
         ESP_LOGI(TAG,
-                 "Connected; command subscription=%s msg_id=%d",
+                 "Connected; subscriptions command=%s msg_id=%d config=%s msg_id=%d",
                  manager->command_topic,
-                 message_id);
+                 message_id,
+                 manager->config_topic,
+                 config_message_id);
         if (manager->connection_callback != NULL) {
             manager->connection_callback(true, manager->callback_context);
         }
@@ -47,6 +53,25 @@ static void mqtt_event_handler(
         }
         break;
     case MQTT_EVENT_DATA:
+        /* Configuration documents are small; ignore fragmented deliveries
+         * rather than applying a partial JSON document. */
+        if (event->current_data_offset != 0 ||
+            event->data_len != event->total_data_len) {
+            ESP_LOGW(TAG, "Ignoring fragmented MQTT message (%d bytes)",
+                     event->total_data_len);
+            break;
+        }
+        if (event->topic_len == (int)strlen(manager->config_topic) &&
+            strncmp(event->topic,
+                    manager->config_topic,
+                    (size_t)event->topic_len) == 0) {
+            if (manager->config_callback != NULL && event->data_len > 0) {
+                manager->config_callback(event->data,
+                                         (size_t)event->data_len,
+                                         manager->callback_context);
+            }
+            break;
+        }
         if (event->topic_len == (int)strlen(manager->command_topic) &&
             strncmp(event->topic,
                     manager->command_topic,
@@ -69,6 +94,7 @@ esp_err_t mqtt_manager_init(
     mqtt_manager_t *manager,
     const saems_config_t *config,
     mqtt_manager_command_callback_t command_callback,
+    mqtt_manager_command_callback_t config_callback,
     mqtt_manager_published_callback_t published_callback,
     mqtt_manager_connection_callback_t connection_callback,
     void *callback_context)
@@ -79,6 +105,7 @@ esp_err_t mqtt_manager_init(
     }
     memset(manager, 0, sizeof(*manager));
     manager->command_callback = command_callback;
+    manager->config_callback = config_callback;
     manager->published_callback = published_callback;
     manager->connection_callback = connection_callback;
     manager->callback_context = callback_context;
@@ -95,6 +122,13 @@ esp_err_t mqtt_manager_init(
                       "saems/%s/commands",
                       config->device_id);
     if (length < 0 || length >= (int)sizeof(manager->command_topic)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    length = snprintf(manager->config_topic,
+                      sizeof(manager->config_topic),
+                      "saems/%s/config",
+                      config->device_id);
+    if (length < 0 || length >= (int)sizeof(manager->config_topic)) {
         return ESP_ERR_INVALID_SIZE;
     }
 

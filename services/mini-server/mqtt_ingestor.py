@@ -4,11 +4,16 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+
+import alert_engine
 from mqtt_security import configure_mqtt_tls
+from notifier import NullNotifier, notifier_from_env
+from schema import ensure_schema
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -21,6 +26,10 @@ MQTT_USERNAME = os.getenv("MQTT_USERNAME", "saems_server")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = "saems/+/telemetry"
 MQTT_CLIENT_ID = "saems-mini-server-ingestor"
+OFFLINE_CHECK_SECONDS = 30
+
+# Replaced by notifier_from_env() in main(); tests may inject their own.
+notifier = NullNotifier()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,6 +118,7 @@ def initialize_database() -> None:
             WHERE boot_id IS NOT NULL AND seq IS NOT NULL
             """
         )
+        ensure_schema(connection)
         connection.commit()
 
 
@@ -207,10 +217,33 @@ def on_message(client, userdata, message) -> None:
                 boot_id,
                 seq,
             )
+            evaluate_alerts(device_id, payload)
     except (UnicodeDecodeError, json.JSONDecodeError):
         logging.exception("Invalid JSON payload on %s", message.topic)
     except (TypeError, ValueError, sqlite3.Error):
         logging.exception("Failed to process MQTT message on %s", message.topic)
+
+
+def evaluate_alerts(device_id: str, payload: dict) -> None:
+    """Alerts never block ingestion: telemetry is already committed."""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as connection:
+            alert_engine.process_telemetry(
+                connection, device_id, payload, notifier.send
+            )
+            connection.commit()
+    except (sqlite3.Error, TypeError, ValueError, KeyError):
+        logging.exception("Alert evaluation failed for %s", device_id)
+
+
+def offline_monitor(stop: threading.Event) -> None:
+    while not stop.wait(OFFLINE_CHECK_SECONDS):
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as connection:
+                alert_engine.check_offline(connection, notifier.send)
+                connection.commit()
+        except (sqlite3.Error, TypeError, ValueError, KeyError):
+            logging.exception("Offline check failed")
 
 
 def create_mqtt_client():
@@ -235,6 +268,14 @@ def main() -> None:
 
     initialize_database()
     logging.info("Database: %s", DB_PATH)
+    global notifier
+    notifier = notifier_from_env()
+    logging.info("Telegram notifications: %s",
+                 "enabled" if notifier.configured else "not configured")
+    threading.Thread(
+        target=offline_monitor, args=(threading.Event(),),
+        name="offline-monitor", daemon=True,
+    ).start()
     client = create_mqtt_client()
     client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)
     # Retry the initial connection as well as later disconnects. This keeps

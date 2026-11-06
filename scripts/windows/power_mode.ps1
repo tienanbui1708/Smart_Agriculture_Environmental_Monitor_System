@@ -52,4 +52,4 @@ if ($Action -eq 'Set') {
     Write-Output "Power mode '$saemsRequestedMode' persisted. It applies at the next sample boundary; no rebuild or reflash is needed."
 }
 
-$saemsConfig | Select-Object device_id,power_mode,telemetry_interval_s,power_mode_applies_next_cycle,ap_enabled,ble_enabled
+$saemsConfig | Select-Object device_id,power_mode,telemetry_interval_s,config_version,ap_enabled,ble_enabled

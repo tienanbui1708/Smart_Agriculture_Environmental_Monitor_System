@@ -31,6 +31,7 @@
 #include "sensor_manager.h"
 #include "storage_manager.h"
 #include "sync_manager.h"
+#include "threshold_monitor.h"
 
 #define SAEMS_I2C_SDA GPIO_NUM_17
 #define SAEMS_I2C_SCL GPIO_NUM_18
@@ -90,6 +91,7 @@ typedef struct {
     uint32_t boot_id;
     uint32_t sequence;
     uint32_t sequence_limit;
+    uint16_t alarm_mask;
     bool sensor_ready;
     bool relay_ready;
 } application_context_t;
@@ -99,6 +101,7 @@ typedef struct {
     uint32_t boot_id;
     uint32_t next_sequence;
     uint32_t sequence_limit;
+    uint16_t alarm_mask;
 } application_rtc_state_t;
 
 static const char *TAG = "APPLICATION_MANAGER";
@@ -229,6 +232,7 @@ static void save_rtc_sequence_state(void)
     rtc_state.boot_id = application.boot_id;
     rtc_state.next_sequence = application.sequence;
     rtc_state.sequence_limit = application.sequence_limit;
+    rtc_state.alarm_mask = application.alarm_mask;
 }
 
 static esp_err_t initialize_sequence_state(uint32_t wakeup_causes)
@@ -239,6 +243,8 @@ static esp_err_t initialize_sequence_state(uint32_t wakeup_causes)
         application.boot_id = rtc_state.boot_id;
         application.sequence = rtc_state.next_sequence;
         application.sequence_limit = rtc_state.sequence_limit;
+        /* Keep alarm hysteresis across Deep Sleep wake-ups. */
+        application.alarm_mask = rtc_state.alarm_mask;
         ESP_LOGI(TAG,
                  "Resumed RTC sequence: boot=%08" PRIx32
                  " next=%" PRIu32 " limit=%" PRIu32,
@@ -435,6 +441,57 @@ static void mqtt_command(
     }
 }
 
+static void mqtt_config(
+    const char *payload, size_t payload_length, void *context)
+{
+    (void)context;
+    bool applied = false;
+    esp_err_t result = config_manager_update_remote_json(
+        &application.config_manager, payload, payload_length, &applied);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Remote configuration rejected: %s",
+                 esp_err_to_name(result));
+        return;
+    }
+    saems_config_t latest;
+    if (applied &&
+        config_manager_get(&application.config_manager, &latest) == ESP_OK) {
+        ESP_LOGI(TAG,
+                 "Remote configuration v%" PRIu32
+                 " persisted; applies at next sample boundary (interval=%" PRIu32 "s)",
+                 latest.config_version,
+                 latest.telemetry_interval_s);
+    }
+}
+
+static uint16_t evaluate_alarms(const sensor_snapshot_t *snapshot)
+{
+    threshold_readings_t readings;
+    memset(&readings, 0, sizeof(readings));
+    readings.reading[THRESHOLD_METRIC_TEMPERATURE].valid =
+        snapshot->temperature_valid;
+    readings.reading[THRESHOLD_METRIC_TEMPERATURE].value =
+        snapshot->temperature_c;
+    readings.reading[THRESHOLD_METRIC_HUMIDITY].valid =
+        snapshot->humidity_valid;
+    readings.reading[THRESHOLD_METRIC_HUMIDITY].value =
+        snapshot->humidity_pct;
+    readings.reading[THRESHOLD_METRIC_SOIL].valid =
+        snapshot->soil_moisture_valid;
+    readings.reading[THRESHOLD_METRIC_SOIL].value =
+        snapshot->soil_moisture_pct;
+    readings.reading[THRESHOLD_METRIC_LIGHT].valid = snapshot->light_valid;
+    readings.reading[THRESHOLD_METRIC_LIGHT].value = snapshot->light_lux;
+    /* Battery measurement arrives in phase B; until then it stays invalid. */
+    const uint16_t mask = threshold_evaluate(
+        &application.config.thresholds, &readings, application.alarm_mask);
+    if (mask != application.alarm_mask) {
+        ESP_LOGW(TAG, "Threshold alarms changed: 0x%03x -> 0x%03x",
+                 (unsigned)application.alarm_mask, (unsigned)mask);
+    }
+    return mask;
+}
+
 static void mqtt_published(int message_id, void *context)
 {
     (void)context;
@@ -477,6 +534,7 @@ static void start_mqtt_when_ready(void)
     esp_err_t result = mqtt_manager_init(&application.mqtt_manager,
                                         &application.config,
                                         mqtt_command,
+                                        mqtt_config,
                                         mqtt_published,
                                         mqtt_connection,
                                         &application);
@@ -550,6 +608,7 @@ static void sampling_task(void *arg)
         }
 
         transition(APP_STATE_PROCESS_DATA);
+        application.alarm_mask = evaluate_alarms(&snapshot);
         const char *pump_state = application.relay_ready
                                      ? (relay_is_enabled(&application.relay,
                                                          RELAY_CHANNEL_1)
@@ -561,6 +620,8 @@ static void sampling_task(void *arg)
             .boot_id = application.boot_id,
             .sequence = application.sequence,
             .pump_state = pump_state,
+            .config_version = application.config.config_version,
+            .alarm_mask = application.alarm_mask,
         };
         char payload[SAEMS_PAYLOAD_SIZE];
         result = data_manager_build_telemetry(

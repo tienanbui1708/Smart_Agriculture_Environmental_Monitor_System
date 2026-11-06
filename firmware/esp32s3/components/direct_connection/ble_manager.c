@@ -60,6 +60,14 @@ static int append_provider_value(
     if (result != ESP_OK) {
         return BLE_ATT_ERR_UNLIKELY;
     }
+    if (strlen(value) > BLE_ATT_ATTR_MAX_LEN) {
+        /* ATT caps an attribute value at 512 bytes. Fail the read instead
+         * of returning truncated JSON; telemetry is also delivered as
+         * framed notifications, which have no such limit. */
+        ESP_LOGW(TAG, "GATT read value %u bytes exceeds ATT limit %u",
+                 (unsigned)strlen(value), (unsigned)BLE_ATT_ATTR_MAX_LEN);
+        return BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
     return os_mbuf_append(ctxt->om, value, strlen(value)) == 0
                ? 0
                : BLE_ATT_ERR_INSUFFICIENT_RES;
@@ -196,6 +204,27 @@ static void advertise(void)
     }
 }
 
+/* Push the latest telemetry as soon as a client subscribes, so it does not
+ * depend on the size-limited characteristic read or wait a full cycle. */
+static void notify_latest_telemetry(void)
+{
+    if (active_manager->callbacks.latest_telemetry == NULL) {
+        return;
+    }
+    char latest[BLE_JSON_SIZE];
+    if (active_manager->callbacks.latest_telemetry(
+            active_manager->callbacks.context, latest, sizeof(latest)) !=
+            ESP_OK ||
+        strcmp(latest, "{}") == 0) {
+        return;
+    }
+    esp_err_t result = ble_manager_notify_telemetry(active_manager, latest);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Initial telemetry notify failed: %s",
+                 esp_err_to_name(result));
+    }
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
@@ -227,6 +256,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG,
                      "Telemetry notify subscription=%d",
                      active_manager->subscribed);
+            if (active_manager->subscribed) {
+                notify_latest_telemetry();
+            }
         }
         return 0;
     case BLE_GAP_EVENT_ADV_COMPLETE:

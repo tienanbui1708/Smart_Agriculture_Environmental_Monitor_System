@@ -137,7 +137,9 @@ esp_err_t data_manager_build_telemetry(
         "\"soil_digital\":%s,"
         "\"light_lux\":%s,"
         "\"battery_pct\":null,"
-        "\"pump_state\":\"%s\"}",
+        "\"pump_state\":\"%s\","
+        "\"config_version\":%" PRIu32 ","
+        "\"alarm_mask\":%u}",
         SAEMS_TELEMETRY_SCHEMA_VERSION,
         metadata->device_id,
         metadata->boot_id,
@@ -155,7 +157,9 @@ esp_err_t data_manager_build_telemetry(
         soil_raw_json,
         snapshot->soil_raw_valid ? (snapshot->soil_digital ? "true" : "false") : "null",
         light_json,
-        metadata->pump_state);
+        metadata->pump_state,
+        metadata->config_version,
+        (unsigned)metadata->alarm_mask);
 
     if (length < 0) {
         return ESP_FAIL;

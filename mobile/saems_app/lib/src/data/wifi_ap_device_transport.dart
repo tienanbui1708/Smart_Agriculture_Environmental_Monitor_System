@@ -98,14 +98,7 @@ class WifiApDeviceTransport implements DeviceTransport, DirectConfigTransport {
     try {
       final response = await _dio.get<Object?>('/v1/config');
       final body = jsonObject(response.data);
-      return DeviceConfig(
-        deviceId: body['device_id']?.toString() ?? deviceId,
-        telemetryIntervalSeconds:
-            int.tryParse(body['telemetry_interval_s']?.toString() ?? '') ?? 10,
-        soilDryRaw: int.tryParse(body['soil_dry_raw']?.toString() ?? ''),
-        soilWetRaw: int.tryParse(body['soil_wet_raw']?.toString() ?? ''),
-        powerMode: body['power_mode']?.toString() ?? 'direct',
-      );
+      return DeviceConfig.fromJson({'device_id': deviceId, ...body});
     } on DioException catch (error) {
       mapDioError(error);
     }

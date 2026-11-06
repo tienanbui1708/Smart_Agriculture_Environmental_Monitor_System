@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/app_state.dart';
+import 'alerts_screen.dart';
+import 'thresholds_screen.dart';
 
 class DeviceScreen extends ConsumerStatefulWidget {
   const DeviceScreen({super.key});
@@ -99,12 +101,30 @@ class _DeviceScreenState extends ConsumerState<DeviceScreen> {
               ),
             ),
           ),
-          const Card(
+          Card(
             child: ListTile(
-              leading: Icon(Icons.tune),
-              title: Text('Cấu hình cảm biến'),
-              subtitle: Text(
-                'API server hiện chưa có endpoint config. Hiệu chuẩn LM393 vẫn thực hiện trong menuconfig firmware.',
+              leading: const Icon(Icons.tune),
+              title: const Text('Ngưỡng & chu kỳ lấy mẫu'),
+              subtitle: const Text(
+                'Đặt ngưỡng cảnh báo, chu kỳ và chế độ năng lượng qua server '
+                'hoặc kết nối trực tiếp.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ThresholdsScreen()),
+              ),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.notifications_active_outlined),
+              title: const Text('Cảnh báo'),
+              subtitle: const Text(
+                'Lịch sử cảnh báo vượt ngưỡng và mất kết nối.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AlertsScreen()),
               ),
             ),
           ),

@@ -48,6 +48,8 @@ class Telemetry {
     this.lightLux,
     this.batteryPct,
     this.pumpState,
+    this.configVersion,
+    this.alarmMask = 0,
   });
 
   final int schemaVersion;
@@ -64,6 +66,12 @@ class Telemetry {
   final double? lightLux;
   final double? batteryPct;
   final String? pumpState;
+
+  /// Server configuration version applied on the device (0 = local config).
+  final int? configVersion;
+
+  /// Active threshold alarms; decode with `alarmsFromMask`.
+  final int alarmMask;
 
   bool isStale([DateTime? now]) {
     final reference = now ?? DateTime.now().toUtc();
@@ -98,6 +106,8 @@ class Telemetry {
       ),
       batteryPct: _percentage(json['battery_pct']),
       pumpState: _string(json['pump_state']),
+      configVersion: _integer(json['config_version']),
+      alarmMask: _integer(json['alarm_mask']) ?? 0,
     );
   }
 
@@ -116,6 +126,8 @@ class Telemetry {
     'light_lux': lightLux,
     'battery_pct': batteryPct,
     'pump_state': pumpState,
+    'config_version': configVersion,
+    'alarm_mask': alarmMask,
   };
 
   String encode() => jsonEncode(toJson());

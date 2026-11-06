@@ -15,4 +15,5 @@ idf_component_register(
         sensor_manager
         storage_manager
         sync_manager
+        threshold_monitor
 )

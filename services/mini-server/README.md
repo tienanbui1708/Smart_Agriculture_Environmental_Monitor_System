@@ -33,7 +33,11 @@ thích; firmware mới publish trực tiếp vào broker TLS SAEMS.
 | --- | --- |
 | `mqtt_ingestor.py` | Subscribe telemetry, validate, deduplicate và insert SQLite |
 | `legacy_mqtt_ingestor.py` | Chuyển envelope topic cũ sang schema chung |
-| `api.py` | API thiết bị, telemetry, command và dashboard |
+| `api.py` | API thiết bị, telemetry, command, cấu hình, cảnh báo và dashboard |
+| `device_config.py` | Validate cấu hình ngưỡng/chu kỳ, chuyển sang mảng cho firmware |
+| `alert_engine.py` | Đánh giá ngưỡng có hysteresis, cảnh báo offline/online |
+| `notifier.py` | Gửi Telegram qua hàng đợi nền, có thử lại |
+| `schema.py` | Bảng `device_config`, `alerts`, `alert_state` |
 | `mqtt_security.py` | TLS/certificate cho MQTT client |
 | `dashboard/index.html` | Dashboard không phụ thuộc CDN |
 | `scripts/` | Khởi chạy, theo dõi và health check trên Pi |
@@ -91,6 +95,11 @@ Luồng demo ba lớp và các terminal cần mở nằm tại
 | GET | `/api/v1/devices/{id}/telemetry/latest` | Mẫu mới nhất |
 | GET | `/api/v1/devices/{id}/telemetry?limit=50` | Lịch sử |
 | POST | `/api/v1/devices/{id}/commands/pump` | Xếp lệnh bơm vào MQTT |
+| GET | `/api/v1/devices/{id}/configuration` | Cấu hình server và trạng thái đồng bộ với thiết bị |
+| PUT | `/api/v1/devices/{id}/configuration` | Lưu ngưỡng/chu kỳ/chế độ năng lượng, publish retained MQTT |
+| GET | `/api/v1/alerts?device_id=&state=active` | Danh sách cảnh báo |
+| GET | `/api/v1/devices/{id}/alerts` | Cảnh báo của một thiết bị |
+| POST | `/api/v1/notifications/test` | Gửi tin Telegram thử nghiệm |
 | GET | `/docs` | OpenAPI UI có xác thực |
 
 Lệnh bơm mẫu:
@@ -101,6 +110,65 @@ Lệnh bơm mẫu:
 
 API trả `queued` chỉ có nghĩa broker đã nhận lệnh. Trạng thái relay phải được
 xác nhận bằng telemetry tiếp theo; firmware vẫn chịu trách nhiệm auto-off.
+
+## Cấu hình ngưỡng và chu kỳ
+
+`PUT /api/v1/devices/farm-01/configuration` (chỉ gửi phần muốn quản lý; `null`
+nghĩa là server không quản lý giá trị đó):
+
+```json
+{
+  "telemetry_interval_s": 300,
+  "power_mode": null,
+  "offline_alert_after_s": null,
+  "thresholds": {
+    "temperature_c": {"min": 10, "max": 35},
+    "humidity_pct": {"min": 40, "max": 90},
+    "soil_moisture_pct": {"min": 35, "max": null},
+    "light_lux": {"min": null, "max": null},
+    "battery_pct": {"min": 20}
+  }
+}
+```
+
+- Server tăng `version`, publish retained lên `saems/{id}/config` dạng gọn
+  `{"config_version":3,"telemetry_interval_s":300,"thresholds":[10.0,35.0,...]}`.
+  Database chỉ commit sau khi broker xác nhận publish.
+- Thiết bị áp dụng ở chu kỳ lấy mẫu kế tiếp và báo `config_version` trong
+  telemetry. `GET .../configuration` trả `sync_state`: `applied`, `pending`,
+  `unknown` (chưa có telemetry mới) hoặc `not_configured`.
+- Qua MQTT, firmware chỉ nhận `config_version`, `telemetry_interval_s`,
+  `power_mode`, `thresholds`; Wi-Fi/MQTT/AP/hiệu chuẩn đất chỉ đổi qua BLE/AP.
+- Đổi ngưỡng/chu kỳ qua BLE/AP sẽ đặt `config_version = 0` trên thiết bị; khi
+  thiết bị nối lại server, cấu hình retained của server được áp dụng lại.
+- ACL Mosquitto phải có `topic read saems/<id>/config` cho thiết bị và
+  `topic write saems/+/config` cho server (xem `config/acl.example`).
+
+## Cảnh báo Telegram
+
+Ingestor đánh giá mỗi bản ghi mới theo ngưỡng đang lưu trên server, cùng
+hysteresis với firmware (nhiệt 0.5 °C; ẩm, đất, pin 2 %; ánh sáng
+max(10 lux, 5 %)). Mỗi lần vào/ra cảnh báo tạo một dòng trong bảng `alerts`
+và gửi một tin Telegram. Bản ghi gửi bù cũ hơn 10 phút được lưu với
+`backlog=true` nhưng không gửi từng tin. Thiết bị im lặng quá
+`offline_alert_after_s` (mặc định `max(3 × chu kỳ + 60, 300)` giây, hoặc 900
+giây khi chưa đặt chu kỳ) tạo cảnh báo mất kết nối; bản ghi kế tiếp đóng cảnh
+báo và báo đã kết nối lại.
+
+Cài đặt bot:
+
+1. Trong Telegram, nhắn `@BotFather` lệnh `/newbot`, đặt tên, lưu token.
+2. Nhắn cho bot vừa tạo một tin bất kỳ (hoặc thêm bot vào group).
+3. Trên Pi: `curl -s https://api.telegram.org/bot<TOKEN>/getUpdates` và lấy
+   `message.chat.id`.
+4. Ghi vào `.env`: `TELEGRAM_BOT_TOKEN=<TOKEN>` và `TELEGRAM_CHAT_ID=<id>`
+   (nhiều chat cách nhau bằng dấu phẩy), rồi
+   `sudo systemctl restart saems-ingestor saems-api`.
+5. Kiểm tra: `curl -X POST -H "Authorization: Bearer <API token>"
+   http://127.0.0.1:3000/api/v1/notifications/test`.
+
+Token bot là secret: không commit, không dán vào log; notifier không ghi URL
+chứa token ra log.
 
 ## Cài đặt hoặc phục hồi trên Raspberry Pi
 
@@ -140,7 +208,8 @@ Từ `services/mini-server`:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-python3 -m py_compile api.py mqtt_ingestor.py legacy_mqtt_ingestor.py mqtt_security.py
+python3 -m py_compile api.py mqtt_ingestor.py legacy_mqtt_ingestor.py mqtt_security.py \
+    device_config.py alert_engine.py notifier.py schema.py
 ```
 
 ## Giới hạn vận hành

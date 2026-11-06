@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/data_source.dart';
 import '../models/telemetry.dart';
+import '../models/thresholds.dart';
 import '../state/app_state.dart';
 
 class DashboardScreen extends ConsumerWidget {
@@ -84,6 +85,16 @@ class _DashboardContent extends StatelessWidget {
               const Chip(
                 avatar: Icon(Icons.history, size: 18),
                 label: Text('Dữ liệu cũ / cache'),
+              ),
+            for (final alarm in alarmsFromMask(telemetry.alarmMask))
+              Chip(
+                avatar: Icon(
+                  Icons.warning_amber_rounded,
+                  size: 18,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                label: Text(alarm.label),
+                side: BorderSide(color: Theme.of(context).colorScheme.error),
               ),
           ],
         ),

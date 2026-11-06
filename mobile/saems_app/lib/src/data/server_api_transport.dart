@@ -5,10 +5,12 @@ import 'package:dio/dio.dart';
 import '../core/app_config.dart';
 import '../models/device_models.dart';
 import '../models/telemetry.dart';
+import '../models/thresholds.dart';
 import 'device_transport.dart';
 import 'dio_factory.dart';
+import 'remote_config_transport.dart';
 
-class ServerApiTransport implements DeviceTransport {
+class ServerApiTransport implements DeviceTransport, RemoteConfigTransport {
   ServerApiTransport({required String baseUrl, String? token, Dio? dio})
     : _dio = dio ?? createDio(baseUrl, token: token);
 
@@ -87,6 +89,56 @@ class ServerApiTransport implements DeviceTransport {
         data: {'state': enabled ? 'on' : 'off', 'duration_s': durationSeconds},
       );
       return CommandResult.fromJson(jsonObject(response.data));
+    } on DioException catch (error) {
+      mapDioError(error);
+    }
+  }
+
+  @override
+  Future<ServerConfiguration> readServerConfiguration(String deviceId) async {
+    try {
+      final response = await _dio.get<Object?>(
+        '/api/v1/devices/$deviceId/configuration',
+      );
+      return ServerConfiguration.fromJson(jsonObject(response.data));
+    } on DioException catch (error) {
+      mapDioError(error);
+    }
+  }
+
+  @override
+  Future<ServerConfiguration> writeServerConfiguration(
+    String deviceId,
+    ServerConfiguration configuration,
+  ) async {
+    try {
+      final response = await _dio.put<Object?>(
+        '/api/v1/devices/$deviceId/configuration',
+        data: configuration.toRequestJson(),
+      );
+      return ServerConfiguration.fromJson(jsonObject(response.data));
+    } on DioException catch (error) {
+      mapDioError(error);
+    }
+  }
+
+  @override
+  Future<List<DeviceAlert>> readAlerts(
+    String deviceId, {
+    bool activeOnly = false,
+    int limit = 50,
+  }) async {
+    try {
+      final response = await _dio.get<Object?>(
+        '/api/v1/devices/$deviceId/alerts',
+        queryParameters: {'limit': limit, if (activeOnly) 'state': 'active'},
+      );
+      final items = jsonObject(response.data)['items'];
+      if (items is! List) return const [];
+      return items
+          .whereType<Map>()
+          .map((item) => DeviceAlert.fromJson(Map<String, dynamic>.from(item)))
+          .toList(growable: false);
     } on DioException catch (error) {
       mapDioError(error);
     }

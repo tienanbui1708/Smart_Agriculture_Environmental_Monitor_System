@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "threshold_monitor.h"
 
 #define SAEMS_DEVICE_ID_MAX_LEN 32
 #define SAEMS_WIFI_SSID_MAX_LEN 32
@@ -37,6 +38,11 @@ typedef struct {
     bool ble_enabled;
     bool power_save_enabled;
     saems_power_mode_t power_mode;
+    /* Alarm limits; see threshold_monitor.h for the array order. */
+    threshold_limits_t thresholds;
+    /* Version of the server-managed configuration last applied. 0 means
+     * the device runs local (BLE/AP) settings not confirmed by the server. */
+    uint32_t config_version;
 } saems_config_t;
 
 typedef struct {
@@ -53,6 +59,19 @@ esp_err_t config_manager_update_json(
     config_manager_t *manager,
     const char *json,
     size_t json_length);
+/*
+ * Apply a server-managed configuration received over MQTT. Only
+ * config_version, telemetry_interval_s, power_mode and thresholds are
+ * accepted; credentials, network and calibration keys are rejected with
+ * ESP_ERR_NOT_ALLOWED. A document whose config_version equals the stored
+ * version is acknowledged without rewriting NVS (retained redelivery).
+ * *applied is set to true only when the stored configuration changed.
+ */
+esp_err_t config_manager_update_remote_json(
+    config_manager_t *manager,
+    const char *json,
+    size_t json_length,
+    bool *applied);
 esp_err_t config_manager_to_json(
     config_manager_t *manager,
     char *output,

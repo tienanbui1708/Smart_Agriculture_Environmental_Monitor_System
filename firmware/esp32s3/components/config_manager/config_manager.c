@@ -1,6 +1,7 @@
 #include "config_manager.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,26 @@
 #include "sdkconfig.h"
 
 #define CONFIG_NAMESPACE "saems_cfg"
+#define CONFIG_DOCUMENT_MAX 1024
+#define THRESHOLD_BLOB_KEY "thresholds"
+#define THRESHOLD_BLOB_VERSION 1U
+
+/* Stored layout of the alarm limits. Bump the version when it changes. */
+typedef struct {
+    uint8_t version;
+    uint8_t reserved;
+    uint16_t enabled_mask;
+    float value[THRESHOLD_LIMIT_COUNT];
+} threshold_blob_t;
+
+/* Keys the server must never change over MQTT. */
+static const char *const remote_forbidden_keys[] = {
+    "device_id",      "wifi_ssid",        "wifi_password",
+    "mqtt_uri",       "mqtt_username",    "mqtt_password",
+    "ap_ssid",        "ap_password",      "soil_dry_raw",
+    "soil_wet_raw",   "soil_enabled",     "soil_calibrated",
+    "ap_enabled",     "ble_enabled",      "power_save_enabled",
+};
 
 const char *saems_power_mode_name(saems_power_mode_t mode)
 {
@@ -177,6 +198,76 @@ static esp_err_t parse_optional_string(
     return ESP_OK;
 }
 
+static esp_err_t parse_optional_thresholds(
+    const char *json, threshold_limits_t *limits)
+{
+    const char *position = json_value(json, "thresholds");
+    if (position == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    threshold_limits_t parsed;
+    if (!threshold_limits_from_json(position, &parsed) ||
+        !threshold_limits_are_valid(&parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *limits = parsed;
+    return ESP_OK;
+}
+
+static bool thresholds_equal(
+    const threshold_limits_t *left, const threshold_limits_t *right)
+{
+    for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
+        if (left->enabled[index] != right->enabled[index] ||
+            (left->enabled[index] &&
+             left->value[index] != right->value[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool server_managed_changed(
+    const saems_config_t *before, const saems_config_t *after)
+{
+    return before->telemetry_interval_s != after->telemetry_interval_s ||
+           before->power_mode != after->power_mode ||
+           !thresholds_equal(&before->thresholds, &after->thresholds);
+}
+
+static void load_thresholds(nvs_handle_t handle, threshold_limits_t *limits)
+{
+    threshold_blob_t blob;
+    size_t blob_size = sizeof(blob);
+    if (nvs_get_blob(handle, THRESHOLD_BLOB_KEY, &blob, &blob_size) != ESP_OK ||
+        blob_size != sizeof(blob) || blob.version != THRESHOLD_BLOB_VERSION) {
+        return;
+    }
+    threshold_limits_t stored;
+    for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
+        stored.enabled[index] = (blob.enabled_mask & (1U << index)) != 0U;
+        stored.value[index] = blob.value[index];
+    }
+    if (threshold_limits_are_valid(&stored)) {
+        *limits = stored;
+    }
+}
+
+static esp_err_t save_thresholds(
+    nvs_handle_t handle, const threshold_limits_t *limits)
+{
+    threshold_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.version = (uint8_t)THRESHOLD_BLOB_VERSION;
+    for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
+        if (limits->enabled[index]) {
+            blob.enabled_mask = (uint16_t)(blob.enabled_mask | (1U << index));
+        }
+        blob.value[index] = limits->value[index];
+    }
+    return nvs_set_blob(handle, THRESHOLD_BLOB_KEY, &blob, sizeof(blob));
+}
+
 static esp_err_t save_locked(config_manager_t *manager)
 {
     nvs_handle_t handle;
@@ -246,6 +337,13 @@ static esp_err_t save_locked(config_manager_t *manager)
             handle, "power_mode", (uint8_t)manager->current.power_mode);
     }
     if (result == ESP_OK) {
+        result = save_thresholds(handle, &manager->current.thresholds);
+    }
+    if (result == ESP_OK) {
+        result = nvs_set_u32(
+            handle, "cfg_ver", manager->current.config_version);
+    }
+    if (result == ESP_OK) {
         result = nvs_commit(handle);
     }
     nvs_close(handle);
@@ -302,6 +400,8 @@ esp_err_t config_manager_init(
             manager->current.power_mode =
                 (saems_power_mode_t)stored_power_mode;
         }
+        load_thresholds(handle, &manager->current.thresholds);
+        load_u32(handle, "cfg_ver", &manager->current.config_version);
         nvs_close(handle);
     } else if (result != ESP_ERR_NVS_NOT_FOUND) {
         return result;
@@ -331,10 +431,10 @@ esp_err_t config_manager_update_json(
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (json_length >= 1024) {
+    if (json_length >= CONFIG_DOCUMENT_MAX) {
         return ESP_ERR_INVALID_SIZE;
     }
-    char document[1024];
+    char document[CONFIG_DOCUMENT_MAX];
     memcpy(document, json, json_length);
     document[json_length] = '\0';
     if (strchr(document, '{') == NULL || strchr(document, '}') == NULL) {
@@ -472,6 +572,16 @@ esp_err_t config_manager_update_json(
         xSemaphoreGive(manager_mutex(manager));
         return parse_result;
     }
+    parse_result = parse_optional_thresholds(document, &updated.thresholds);
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
+    /* A local (BLE/AP) change to a server-managed value is no longer the
+     * server's version; the retained server config re-applies on reconnect. */
+    if (server_managed_changed(&manager->current, &updated)) {
+        updated.config_version = 0U;
+    }
 
     if (updated.device_id[0] == '\0' ||
         (updated.ap_enabled &&
@@ -488,6 +598,78 @@ esp_err_t config_manager_update_json(
     return result;
 }
 
+esp_err_t config_manager_update_remote_json(
+    config_manager_t *manager,
+    const char *json,
+    size_t json_length,
+    bool *applied)
+{
+    if (applied != NULL) {
+        *applied = false;
+    }
+    if (manager == NULL || json == NULL || json_length == 0 ||
+        applied == NULL || !manager->initialized) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (json_length >= CONFIG_DOCUMENT_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    char document[CONFIG_DOCUMENT_MAX];
+    memcpy(document, json, json_length);
+    document[json_length] = '\0';
+    if (strchr(document, '{') == NULL || strchr(document, '}') == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t index = 0U;
+         index < sizeof(remote_forbidden_keys) / sizeof(remote_forbidden_keys[0]);
+         index++) {
+        if (json_value(document, remote_forbidden_keys[index]) != NULL) {
+            return ESP_ERR_NOT_ALLOWED;
+        }
+    }
+    int version = 0;
+    if (parse_optional_int(document, "config_version", 1, INT_MAX, &version) !=
+        ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(manager_mutex(manager), portMAX_DELAY);
+    if ((uint32_t)version == manager->current.config_version) {
+        xSemaphoreGive(manager_mutex(manager));
+        return ESP_OK;
+    }
+    saems_config_t updated = manager->current;
+    int parsed = 0;
+    esp_err_t parse_result = parse_optional_int(
+        document, "telemetry_interval_s", 1, 3600, &parsed);
+    if (parse_result == ESP_OK) {
+        updated.telemetry_interval_s = (uint32_t)parsed;
+    }
+    if (parse_result == ESP_OK || parse_result == ESP_ERR_NOT_FOUND) {
+        char power_mode[16];
+        parse_result = parse_optional_string(
+            document, "power_mode", power_mode, sizeof(power_mode));
+        if (parse_result == ESP_OK) {
+            parse_result = saems_power_mode_from_string(
+                power_mode, &updated.power_mode);
+        }
+    }
+    if (parse_result == ESP_OK || parse_result == ESP_ERR_NOT_FOUND) {
+        parse_result = parse_optional_thresholds(
+            document, &updated.thresholds);
+    }
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
+    updated.config_version = (uint32_t)version;
+    manager->current = updated;
+    esp_err_t result = save_locked(manager);
+    xSemaphoreGive(manager_mutex(manager));
+    *applied = result == ESP_OK;
+    return result;
+}
+
 esp_err_t config_manager_to_json(
     config_manager_t *manager, char *output, size_t output_size)
 {
@@ -499,6 +681,12 @@ esp_err_t config_manager_to_json(
     ESP_RETURN_ON_ERROR(config_manager_get(manager, &config),
                         "CONFIG_MANAGER",
                         "get config");
+    char thresholds[THRESHOLD_LIMIT_COUNT * 10U + 4U];
+    if (threshold_limits_to_json(
+            &config.thresholds, thresholds, sizeof(thresholds)) < 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    /* Keep this document below the 512-byte BLE attribute read limit. */
     int length = snprintf(
         output,
         output_size,
@@ -509,8 +697,8 @@ esp_err_t config_manager_to_json(
         "\"ble_enabled\":%s,\"power_save_enabled\":%s,"
         "\"power_mode\":\"%s\","
         "\"wifi_configured\":%s,\"mqtt_configured\":%s,"
-        "\"ap_password_configured\":%s,\"restart_required\":true,"
-        "\"power_mode_applies_next_cycle\":true}",
+        "\"ap_password_configured\":%s,"
+        "\"config_version\":%" PRIu32 ",\"thresholds\":%s}",
         config.device_id,
         config.telemetry_interval_s,
         config.soil_dry_raw,
@@ -528,7 +716,9 @@ esp_err_t config_manager_to_json(
         saems_power_mode_name(config.power_mode),
         config.wifi_ssid[0] != '\0' ? "true" : "false",
         config.mqtt_uri[0] != '\0' ? "true" : "false",
-        strlen(config.ap_password) >= 8 ? "true" : "false");
+        strlen(config.ap_password) >= 8 ? "true" : "false",
+        config.config_version,
+        thresholds);
     if (length < 0 || (size_t)length >= output_size) {
         output[0] = '\0';
         return ESP_ERR_INVALID_SIZE;

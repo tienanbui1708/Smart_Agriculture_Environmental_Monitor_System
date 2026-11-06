@@ -32,10 +32,16 @@ class BleDeviceTransport implements DeviceTransport, DirectConfigTransport {
     await connect();
     final reassembler = BleFrameReassembler();
     if (_adapter is FlutterBleAdapter) {
-      final json = await _adapter.readTelemetry();
-      if (json['device_id'] != null) {
-        _latest = Telemetry.fromJson(json);
-        yield _latest!;
+      // A plain read is capped at 512 bytes by ATT; the firmware also pushes
+      // the latest sample as framed notifications right after subscribe.
+      try {
+        final json = await _adapter.readTelemetry();
+        if (json['device_id'] != null) {
+          _latest = Telemetry.fromJson(json);
+          yield _latest!;
+        }
+      } on Exception {
+        // Fall through to the notification stream.
       }
     }
     await for (final frame in _adapter.telemetryFrames) {
@@ -49,8 +55,12 @@ class BleDeviceTransport implements DeviceTransport, DirectConfigTransport {
   @override
   Future<Telemetry> readLatest(String deviceId) async {
     if (_adapter is FlutterBleAdapter) {
-      _latest = Telemetry.fromJson(await _adapter.readTelemetry());
-      return _latest!;
+      try {
+        _latest = Telemetry.fromJson(await _adapter.readTelemetry());
+        return _latest!;
+      } on Exception {
+        if (_latest != null) return _latest!;
+      }
     }
     if (_latest != null) return _latest!;
     return watchTelemetry(deviceId).first.timeout(const Duration(seconds: 8));

@@ -4,17 +4,22 @@ import secrets
 import base64
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 import sqlite3
 from uuid import uuid4
 
 import paho.mqtt.client as mqtt
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
+
+import alert_engine
+import device_config
 from mqtt_security import configure_mqtt_tls
+from notifier import notifier_from_env
+from schema import ensure_schema
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,7 +46,9 @@ class PumpCommand(BaseModel):
         le=86400,
     )
 
-app = FastAPI(title="SAEMS Mini Server API", version="0.3.0")
+notifier = notifier_from_env()
+
+app = FastAPI(title="SAEMS Mini Server API", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[value for value in os.getenv("CORS_ORIGINS", "").split(",") if value],
@@ -118,6 +125,7 @@ def row_to_telemetry(row):
         key: raw[key] for key in (
             "schema_version", "data_mode", "sensor_health", "sensor_status",
             "uptime_ms", "uptime_s", "timestamp_source", "soil_raw", "soil_digital",
+            "config_version", "alarm_mask",
         ) if isinstance(raw, dict) and key in raw
     }
     return {
@@ -152,13 +160,15 @@ def is_online(last_seen: str) -> bool:
         return False
 
 
-def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
-    if not MQTT_PASSWORD:
-        raise HTTPException(503, "MQTT_PASSWORD is not configured")
-    if any(character in device_id for character in "/#+ "):
+def validate_device_id(device_id: str) -> None:
+    if not device_id or len(device_id) > 32 or any(
+        character in device_id for character in "/#+ "
+    ):
         raise HTTPException(400, "Invalid device_id")
 
-    topic = f"saems/{device_id}/commands"
+
+def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
+    validate_device_id(device_id)
     payload = json.dumps(
         {
             "command": "pump",
@@ -168,6 +178,12 @@ def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
         },
         separators=(",", ":"),
     )
+    publish_mqtt(f"saems/{device_id}/commands", payload, retain=False)
+
+
+def publish_mqtt(topic: str, payload: str, retain: bool):
+    if not MQTT_PASSWORD:
+        raise HTTPException(503, "MQTT_PASSWORD is not configured")
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=f"saems-api-{uuid4().hex[:12]}",
@@ -180,7 +196,7 @@ def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
     try:
         client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
         client.loop_start()
-        info = client.publish(topic, payload, qos=1, retain=False)
+        info = client.publish(topic, payload, qos=1, retain=retain)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             raise HTTPException(503, f"MQTT publish failed: {info.rc}")
         info.wait_for_publish(timeout=5)
@@ -320,6 +336,135 @@ def get_telemetry(
         }
     finally:
         connection.close()
+
+
+def open_writable_database():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    ensure_schema(connection)
+    return connection
+
+
+def applied_config_version(connection, device_id: str) -> Optional[int]:
+    """Version the device reported in its latest telemetry, if any."""
+    try:
+        row = connection.execute(
+            "SELECT raw_json FROM telemetry WHERE device_id = ? ORDER BY id DESC LIMIT 1",
+            (device_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    try:
+        value = json.loads(row["raw_json"]).get("config_version")
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def configuration_response(connection, device_id: str):
+    version, configuration, updated_at = device_config.load_configuration(
+        connection, device_id
+    )
+    applied = applied_config_version(connection, device_id)
+    if version == 0:
+        sync_state = "not_configured"
+    elif applied is None:
+        sync_state = "unknown"
+    elif applied == version:
+        sync_state = "applied"
+    else:
+        sync_state = "pending"
+    return {
+        "device_id": device_id,
+        "version": version,
+        "applied_version": applied,
+        "sync_state": sync_state,
+        "updated_at": updated_at,
+        "configuration": configuration,
+    }
+
+
+@app.get("/api/v1/devices/{device_id}/configuration")
+def get_configuration(device_id: str):
+    validate_device_id(device_id)
+    connection = open_writable_database()
+    try:
+        return configuration_response(connection, device_id)
+    finally:
+        connection.close()
+
+
+@app.put("/api/v1/devices/{device_id}/configuration")
+def put_configuration(device_id: str, document: dict[str, Any] = Body(...)):
+    """Validate, store and publish the configuration retained over MQTT.
+
+    The database row is committed only after the broker acknowledges the
+    retained publish, so server and device versions cannot diverge.
+    """
+    validate_device_id(device_id)
+    try:
+        configuration = device_config.validate_configuration(document)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    connection = open_writable_database()
+    try:
+        version, _updated_at = device_config.store_configuration(
+            connection, device_id, configuration
+        )
+        payload = json.dumps(
+            device_config.device_document(configuration, version),
+            separators=(",", ":"),
+        )
+        publish_mqtt(f"saems/{device_id}/config", payload, retain=True)
+        connection.commit()
+        return configuration_response(connection, device_id)
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+@app.get("/api/v1/alerts")
+def get_alerts(
+    device_id: Optional[str] = None,
+    state: Optional[Literal["active", "resolved"]] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    if device_id is not None:
+        validate_device_id(device_id)
+    connection = open_writable_database()
+    try:
+        items = alert_engine.list_alerts(connection, device_id, state, limit)
+        return {"count": len(items), "items": items}
+    finally:
+        connection.close()
+
+
+@app.get("/api/v1/devices/{device_id}/alerts")
+def get_device_alerts(
+    device_id: str,
+    state: Optional[Literal["active", "resolved"]] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return get_alerts(device_id=device_id, state=state, limit=limit)
+
+
+@app.post("/api/v1/notifications/test")
+def test_notification():
+    if not notifier.configured:
+        raise HTTPException(
+            503, "Telegram is not configured (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)"
+        )
+    sent = notifier.send_now(
+        "🔔 SAEMS: tin nhắn thử nghiệm. Cảnh báo Telegram đã hoạt động."
+    )
+    if not sent:
+        raise HTTPException(502, "Telegram API rejected or did not receive the message")
+    return {"status": "sent"}
 
 
 app.mount(
