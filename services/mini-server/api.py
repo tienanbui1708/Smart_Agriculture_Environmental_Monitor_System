@@ -132,7 +132,7 @@ def row_to_telemetry(row):
             "schema_version", "data_mode", "sensor_health", "sensor_status",
             "uptime_ms", "uptime_s", "timestamp_source", "soil_raw", "soil_digital",
             "config_version", "alarm_mask", "battery_source", "battery_state",
-            "pump_reason",
+            "pump_reason", "queue_dropped",
         ) if isinstance(raw, dict) and key in raw
     }
     return {

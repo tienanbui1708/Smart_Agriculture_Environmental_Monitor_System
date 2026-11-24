@@ -43,6 +43,11 @@ Default base URL: `http://192.168.4.1`.
 | PUT | `/v1/config` |
 | POST | `/v1/commands/pump` |
 
+`/v1/telemetry/history?limit=N` (N <= 10) returns the N most recent records
+kept in the flash log (sent or not), oldest first, with `pending_count` and
+`dropped_count`. `/v1/status` reports `pending_records`, `dropped_records` and
+`storage` (`flash_log`, or `nvs` when the partition is missing).
+
 Config writes may contain Wi-Fi/MQTT/AP credentials and manager settings. Secret
 values are persisted but never returned by `GET /v1/config`. Transport and sensor
 changes become fully active after device restart.

@@ -1,8 +1,16 @@
 #include "sync_manager.h"
 
+#include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+
+#define BATCH_PREFIX "{\"batch\":["
+#define BATCH_SUFFIX "]}"
+#define BATCH_BUFFER_SIZE                                                  (sizeof(BATCH_PREFIX) + sizeof(BATCH_SUFFIX) +                          SYNC_MANAGER_BATCH_MAX * (size_t)SAEMS_STORAGE_RECORD_SIZE)
 
 static const char *TAG = "SYNC_MANAGER";
 
@@ -22,8 +30,10 @@ esp_err_t sync_manager_init(
     manager->storage = storage;
     manager->mqtt = mqtt;
     manager->in_flight_message_id = -1;
+    manager->in_flight_last_id = 0U;
+    manager->buffer = malloc(BATCH_BUFFER_SIZE);
     manager->mutex = xSemaphoreCreateMutex();
-    if (manager->mutex == NULL) {
+    if (manager->mutex == NULL || manager->buffer == NULL) {
         return ESP_ERR_NO_MEM;
     }
     manager->initialized = true;
@@ -42,24 +52,42 @@ void sync_manager_kick(sync_manager_t *manager)
         return;
     }
 
-    char payload[SAEMS_STORAGE_RECORD_SIZE];
-    esp_err_t result = storage_manager_peek(
-        manager->storage, payload, sizeof(payload));
+    /* Leave room in front for the batch prefix and behind for the suffix. */
+    const size_t prefix_length = strlen(BATCH_PREFIX);
+    char *records = manager->buffer + prefix_length;
+    size_t count = 0U;
+    uint32_t last_id = 0U;
+    esp_err_t result = storage_manager_read_pending(
+        manager->storage,
+        SYNC_MANAGER_BATCH_MAX,
+        records,
+        BATCH_BUFFER_SIZE - prefix_length - strlen(BATCH_SUFFIX),
+        &count,
+        &last_id);
     if (result == ESP_ERR_NOT_FOUND) {
         xSemaphoreGive(manager_mutex(manager));
         return;
     }
     if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Read pending record failed: %s", esp_err_to_name(result));
+        ESP_LOGE(TAG, "Read pending records failed: %s", esp_err_to_name(result));
         xSemaphoreGive(manager_mutex(manager));
         return;
     }
 
+    const char *payload = records;
+    if (count > 1U) {
+        memcpy(manager->buffer, BATCH_PREFIX, prefix_length);
+        strcat(manager->buffer, BATCH_SUFFIX);
+        payload = manager->buffer;
+    }
     int message_id = mqtt_manager_publish(manager->mqtt, payload);
     if (message_id >= 0) {
         manager->in_flight_message_id = message_id;
+        manager->in_flight_last_id = last_id;
         ESP_LOGI(TAG,
-                 "Sync pending record; msg_id=%d remaining=%u",
+                 "Sync %u record(s) through id %" PRIu32 "; msg_id=%d pending=%u",
+                 (unsigned)count,
+                 last_id,
                  message_id,
                  (unsigned)storage_manager_pending_count(manager->storage));
     }
@@ -76,10 +104,11 @@ void sync_manager_on_published(sync_manager_t *manager, int message_id)
         xSemaphoreGive(manager_mutex(manager));
         return;
     }
-    esp_err_t result = storage_manager_pop(manager->storage);
+    esp_err_t result = storage_manager_mark_sent(
+        manager->storage, manager->in_flight_last_id);
     manager->in_flight_message_id = -1;
     if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Remove acknowledged record failed: %s", esp_err_to_name(result));
+        ESP_LOGE(TAG, "Acknowledge records failed: %s", esp_err_to_name(result));
     }
     xSemaphoreGive(manager_mutex(manager));
     sync_manager_kick(manager);

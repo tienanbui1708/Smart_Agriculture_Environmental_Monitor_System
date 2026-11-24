@@ -53,6 +53,7 @@ class Telemetry {
     this.batteryState,
     this.configVersion,
     this.alarmMask = 0,
+    this.queueDropped = 0,
   });
 
   final int schemaVersion;
@@ -84,6 +85,9 @@ class Telemetry {
 
   /// Active threshold alarms; decode with `alarmsFromMask`.
   final int alarmMask;
+
+  /// Offline records the device lost because its flash log was full.
+  final int queueDropped;
 
   bool isStale([DateTime? now]) {
     final reference = now ?? DateTime.now().toUtc();
@@ -123,6 +127,7 @@ class Telemetry {
       batteryState: _string(json['battery_state']),
       configVersion: _integer(json['config_version']),
       alarmMask: _integer(json['alarm_mask']) ?? 0,
+      queueDropped: _integer(json['queue_dropped']) ?? 0,
     );
   }
 
@@ -146,6 +151,7 @@ class Telemetry {
     'battery_state': batteryState,
     'config_version': configVersion,
     'alarm_mask': alarmMask,
+    'queue_dropped': queueDropped,
   };
 
   String encode() => jsonEncode(toJson());

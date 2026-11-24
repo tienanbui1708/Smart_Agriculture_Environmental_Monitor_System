@@ -39,6 +39,11 @@ Configuration body (every key optional; `null` = not managed by the server):
 }
 ```
 
+Telemetry MQTT messages are either one record or an offline batch
+`{"batch":[record, ...]}` (at most 64 records, the firmware sends 8) on the same
+`saems/{id}/telemetry` topic; duplicates by `(device_id, boot_id, seq)` are
+ignored (see `docs/offline-storage.md`).
+
 The device receives the compact form on MQTT: `thresholds` as a 9-number array
 and `irrigation` as `[enabled, threshold_pct, max_runtime_s, min_rest_s]`
 (see `firmware/esp32s3/components/{threshold_monitor,irrigation}`).
@@ -63,6 +68,7 @@ reported as a real zero:
 - `battery_source` (`none`/`adc`/`simulated`), `battery_state`
   (`unknown`/`normal`/`low`/`critical`), `pump_reason` (`auto`/`manual`/
   `safety_off`/`low_battery`/`null`) — see `docs/pump-battery.md`
+- `queue_dropped`: unsent records lost because the device flash log was full
 - `config_version` (server configuration applied, `0` = local) and `alarm_mask`
   (threshold alarm bits, order in `threshold_monitor.h`)
 - `sensor_health`: `ok`, `degraded`, or `unavailable`

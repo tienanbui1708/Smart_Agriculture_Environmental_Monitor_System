@@ -155,7 +155,8 @@ esp_err_t data_manager_build_telemetry(
         "\"pump_state\":\"%s\","
         "\"pump_reason\":%s,"
         "\"config_version\":%" PRIu32 ","
-        "\"alarm_mask\":%u}",
+        "\"alarm_mask\":%u,"
+        "\"queue_dropped\":%" PRIu32 "}",
         SAEMS_TELEMETRY_SCHEMA_VERSION,
         metadata->device_id,
         metadata->boot_id,
@@ -179,7 +180,8 @@ esp_err_t data_manager_build_telemetry(
         metadata->pump_state,
         pump_reason_json,
         metadata->config_version,
-        (unsigned)metadata->alarm_mask);
+        (unsigned)metadata->alarm_mask,
+        metadata->queue_dropped);
 
     if (length < 0) {
         return ESP_FAIL;

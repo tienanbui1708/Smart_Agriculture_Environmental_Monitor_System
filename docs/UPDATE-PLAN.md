@@ -26,7 +26,7 @@ Ký hiệu: `[x]` xong · `[~]` đang làm · `[ ]` chưa làm · 🔧 cần ph�
 |---|---|---|---|
 | A | Ngưỡng, cấu hình từ xa, cảnh báo Telegram | Output Server "Cảnh báo", Input Device "cập nhật ngưỡng" | `[x]` code · 🔧 chờ nghiệm thu board/Pi |
 | B | Kịch bản máy bơm và pin (thật + mô phỏng) | Battery Level, Relay bơm | `[x]` code · 🔧 chờ board |
-| C | Lưu offline bằng LittleFS ring buffer | Offline Resilience "không mất dữ liệu" | `[ ]` |
+| C | Lưu offline bằng ring buffer trên flash | Offline Resilience "không mất dữ liệu" | `[x]` code · 🔧 chờ board |
 | D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[ ]` |
 | E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[ ]` |
 | F | Chất lượng code, test, bằng chứng nghiệm thu | MISRA/best practice, Giai đoạn 4, năng lượng | `[ ]` |
@@ -154,11 +154,24 @@ pin yếu, pin cạn, hồi pin — chạy với `SAEMS_BATTERY_SOURCE_SIMULATED
 
 ## GĐ C — Lưu offline bền hơn
 
-- [ ] Phân vùng LittleFS 2–4 MB sau `coredump` (giữ nguyên NVS/OTA). 🔧 cần `flash` toàn bộ một lần.
-- [ ] Ring buffer khoảng 5.000 bản ghi, khi đầy bỏ bản **cũ nhất**, đếm số bản bị bỏ.
-- [ ] Chuyển bản ghi đang chờ từ NVS sang LittleFS ở lần boot đầu.
-- [ ] Gửi bù theo lô; server nhận lô và khử trùng.
-- [ ] Test ring buffer trên máy tính.
+Chi tiết thiết kế và nghiệm thu: [`offline-storage.md`](offline-storage.md).
+
+- [x] Phân vùng `telemetry` 6 MB tại 0x650000 sau `coredump` (giữ nguyên NVS/OTA). 🔧 cần
+  `flash` toàn bộ một lần (`run_device.ps1 -Action Flash`; NVS giữ nguyên).
+- [x] **Đổi so với kế hoạch:** không dùng LittleFS mà ghi vòng thẳng lên phân vùng
+  (component `record_log`, ô 1 KB, ~6.140 bản ghi): ghi tuần tự mòn đều, an toàn mất điện
+  (magic ghi cuối, CRC32), không thêm thư viện, test được trên máy tính.
+- [x] Đầy thì xóa sector **cũ nhất**, đếm bản bị bỏ (`queue_dropped` trong telemetry, lưu NVS).
+- [x] Chuyển bản ghi đang chờ từ hàng đợi NVS cũ sang flash ở lần boot đầu; thiếu phân vùng thì
+  tự dùng lại hàng đợi NVS 32 bản.
+- [x] Trạng thái vòng giữ trong RTC nên thức dậy từ Deep Sleep không phải quét lại flash.
+- [x] Gửi bù theo lô tối đa 8 bản `{"batch":[...]}` trên cùng topic (không đổi ACL), PUBACK xác
+  nhận cả lô theo id; server ghi lô trong một transaction, bỏ trùng theo `(device_id, boot_id, seq)`,
+  bỏ qua bản hỏng mà không mất cả lô.
+- [x] Lịch sử BLE/AP trả các bản **mới nhất** (kể cả đã gửi) kèm `pending_count`, `dropped_count`;
+  status có `dropped_records`, `storage`.
+- [x] Host test `tests/test_record_log.c` (36.915 checks, gồm test ngẫu nhiên có reboot và mất
+  điện giữa lúc ghi); test server nhận lô (5 test, tổng 26); app hiện chip "Bộ nhớ offline đầy".
 
 ## GĐ D — LED trạng thái
 
@@ -201,3 +214,4 @@ pin yếu, pin cạn, hồi pin — chạy với `SAEMS_BATTERY_SOURCE_SIMULATED
 | 2026-11-24 | Cài SSH key laptop → Pi. Triển khai server GĐ A lên Pi, Telegram hoạt động. Còn: flash ESP32, cài app lên máy Android. |
 | 2026-11-24 | Cài app GĐ A lên Samsung A24 và Pixel 6 (sửa lỗi Kotlin incremental do khác ổ đĩa). Push nhánh lên GitHub. Board đã tháo, chờ lắp lại. |
 | 2026-11-24 | GĐ B xong phần code (firmware, server, app, tài liệu); server GĐ B triển khai lên Pi. Chờ board để nghiệm thu GĐ A + B. |
+| 2026-11-24 | GĐ C xong phần code: vòng ghi flash 6 MB, gửi bù theo lô, server nhận lô; server triển khai lên Pi. |

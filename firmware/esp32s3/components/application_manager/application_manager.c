@@ -576,7 +576,8 @@ static esp_err_t provide_status(
         output_size,
         "{\"device_id\":\"%s\",\"online\":true,\"last_seen\":null,"
         "\"device_state\":\"%s\",\"server_connected\":%s,"
-        "\"pending_records\":%u,\"telemetry\":%s}",
+        "\"pending_records\":%u,\"dropped_records\":%" PRIu32 ","
+        "\"storage\":\"%s\",\"telemetry\":%s}",
         application.config.device_id,
         state_name(application.state),
         mqtt_manager_is_connected(&application.mqtt_manager)
@@ -584,6 +585,8 @@ static esp_err_t provide_status(
             : "false",
         (unsigned)storage_manager_pending_count(
             &application.storage_manager),
+        storage_manager_dropped_count(&application.storage_manager),
+        storage_manager_backend_name(&application.storage_manager),
         latest);
     return length < 0 || (size_t)length >= output_size
                ? ESP_ERR_INVALID_SIZE
@@ -829,6 +832,8 @@ static void sampling_task(void *arg)
             .battery_pct = battery.percent,
             .battery_source = battery_source_name(application.battery.source),
             .battery_state = battery_level_name(battery.level),
+            .queue_dropped = storage_manager_dropped_count(
+                &application.storage_manager),
             .config_version = application.config.config_version,
             .alarm_mask = application.alarm_mask,
         };

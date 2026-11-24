@@ -22,6 +22,8 @@ typedef struct {
     float battery_pct;
     const char *battery_source;
     const char *battery_state;
+    /* Unsent records lost because the offline log was full (total). */
+    uint32_t queue_dropped;
     /* Server configuration version applied on the device (0 = local). */
     uint32_t config_version;
     /* Active threshold alarms, bit order in threshold_monitor.h. */

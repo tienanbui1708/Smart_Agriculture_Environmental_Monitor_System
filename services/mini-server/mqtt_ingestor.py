@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from contextlib import closing
 import json
 import logging
 import os
@@ -139,6 +140,106 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
     logging.warning("MQTT disconnected: %s; waiting for reconnect", reason_code)
 
 
+MAX_BATCH_RECORDS = 64
+
+
+def store_record(connection, topic_device_id: str, payload: dict) -> bool:
+    """Insert one telemetry record; return False for a duplicate.
+
+    Duplicates (same device_id, boot_id, seq) come from QoS 1 redelivery or
+    from a batch re-sent after a lost PUBACK, and are ignored.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Telemetry record must be a JSON object")
+    device_id = str(payload.get("device_id") or topic_device_id)
+    if device_id != topic_device_id:
+        raise ValueError(
+            f"device_id mismatch: topic={topic_device_id} payload={device_id}"
+        )
+    boot_value = payload.get("boot_id")
+    boot_id = str(boot_value) if boot_value is not None else None
+    seq_value = payload.get("seq")
+    seq = int(seq_value) if seq_value is not None else None
+    timestamp = str(payload.get("timestamp") or utc_now())
+    light_value = payload.get(
+        "light_lux", payload.get("light_value", payload.get("light"))
+    )
+    light_unit = "lux" if "light_lux" in payload else None
+    raw_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    cursor = connection.execute(
+        """
+        INSERT OR IGNORE INTO telemetry (
+            device_id, boot_id, seq, timestamp, received_at,
+            temperature_c, humidity_pct, soil_moisture_pct,
+            light_value, light_unit, battery_pct, pump_state, raw_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            device_id,
+            boot_id,
+            seq,
+            timestamp,
+            utc_now(),
+            optional_float(payload, "temperature_c"),
+            optional_float(payload, "humidity_pct"),
+            optional_float(payload, "soil_moisture_pct"),
+            float(light_value) if light_value is not None else None,
+            light_unit,
+            optional_float(payload, "battery_pct"),
+            payload.get("pump_state"),
+            raw_json,
+        ),
+    )
+    if cursor.rowcount == 0:
+        logging.info("Duplicate ignored: device=%s boot=%s seq=%s",
+                     device_id, boot_id, seq)
+        return False
+    logging.info("Telemetry saved: device=%s boot=%s seq=%s", device_id, boot_id, seq)
+    return True
+
+
+def ingest_payload(topic_device_id: str, payload) -> tuple[int, int]:
+    """Store a single record or an offline batch {"batch": [...]}.
+
+    The whole batch is one transaction, so a crash never leaves half of it;
+    the device re-sends unacknowledged batches and duplicates are ignored.
+    Returns (stored, duplicates); invalid records are logged and skipped.
+    """
+    if isinstance(payload, dict) and "batch" in payload:
+        records = payload["batch"]
+        if not isinstance(records, list) or not records:
+            raise ValueError("batch must be a non-empty list")
+        if len(records) > MAX_BATCH_RECORDS:
+            raise ValueError(f"batch larger than {MAX_BATCH_RECORDS} records")
+    elif isinstance(payload, dict):
+        records = [payload]
+    else:
+        raise ValueError("Payload must be a JSON object")
+
+    new_records = []
+    invalid = 0
+    with closing(sqlite3.connect(DB_PATH, timeout=10)) as connection:
+        for index, record in enumerate(records):
+            # The broker has already acknowledged the batch to the device, so
+            # one malformed record must not cost the rest of it.
+            try:
+                if store_record(connection, topic_device_id, record):
+                    new_records.append(record)
+            except (TypeError, ValueError) as error:
+                invalid += 1
+                logging.warning("Skipping invalid record %d from %s: %s",
+                                index, topic_device_id, error)
+        connection.commit()
+    duplicates = len(records) - len(new_records) - invalid
+    if len(records) > 1:
+        logging.info("Offline batch from %s: %d stored, %d duplicates, %d invalid",
+                     topic_device_id, len(new_records), duplicates, invalid)
+    for record in new_records:
+        evaluate_alerts(topic_device_id, record)
+    return len(new_records), duplicates
+
+
 def on_message(client, userdata, message) -> None:
     try:
         topic_parts = message.topic.split("/")
@@ -149,75 +250,8 @@ def on_message(client, userdata, message) -> None:
         ):
             logging.warning("Ignoring unexpected topic: %s", message.topic)
             return
-
         payload = json.loads(message.payload.decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("Payload must be a JSON object")
-
-        topic_device_id = topic_parts[1]
-        device_id = str(payload.get("device_id") or topic_device_id)
-        if device_id != topic_device_id:
-            raise ValueError(
-                f"device_id mismatch: topic={topic_device_id} "
-                f"payload={device_id}"
-            )
-
-        boot_value = payload.get("boot_id")
-        boot_id = str(boot_value) if boot_value is not None else None
-        seq_value = payload.get("seq")
-        seq = int(seq_value) if seq_value is not None else None
-        timestamp = str(payload.get("timestamp") or utc_now())
-        light_value = payload.get(
-            "light_lux", payload.get("light_value", payload.get("light"))
-        )
-        light_unit = "lux" if "light_lux" in payload else None
-        raw_json = json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":")
-        )
-
-        with sqlite3.connect(DB_PATH, timeout=10) as connection:
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO telemetry (
-                    device_id, boot_id, seq, timestamp, received_at,
-                    temperature_c, humidity_pct, soil_moisture_pct,
-                    light_value, light_unit, battery_pct, pump_state, raw_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    device_id,
-                    boot_id,
-                    seq,
-                    timestamp,
-                    utc_now(),
-                    optional_float(payload, "temperature_c"),
-                    optional_float(payload, "humidity_pct"),
-                    optional_float(payload, "soil_moisture_pct"),
-                    float(light_value) if light_value is not None else None,
-                    light_unit,
-                    optional_float(payload, "battery_pct"),
-                    payload.get("pump_state"),
-                    raw_json,
-                ),
-            )
-            connection.commit()
-
-        if cursor.rowcount == 0:
-            logging.info(
-                "QoS duplicate ignored: device=%s boot=%s seq=%s",
-                device_id,
-                boot_id,
-                seq,
-            )
-        else:
-            logging.info(
-                "Telemetry saved: device=%s boot=%s seq=%s",
-                device_id,
-                boot_id,
-                seq,
-            )
-            evaluate_alerts(device_id, payload)
+        ingest_payload(topic_parts[1], payload)
     except (UnicodeDecodeError, json.JSONDecodeError):
         logging.exception("Invalid JSON payload on %s", message.topic)
     except (TypeError, ValueError, sqlite3.Error):

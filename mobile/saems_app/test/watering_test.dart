@@ -95,5 +95,11 @@ void main() {
     expect(pumpReasonLabel(telemetry.pumpReason), contains('an toàn'));
     expect(batteryStateLabel('critical'), contains('khóa máy bơm'));
     expect(Telemetry.fromJson(telemetry.toJson()).pumpReason, 'safety_off');
+    expect(telemetry.queueDropped, 0);
+    expect(
+      Telemetry.fromJson({'device_id': 'farm-01', 'queue_dropped': 12})
+          .queueDropped,
+      12,
+    );
   });
 }

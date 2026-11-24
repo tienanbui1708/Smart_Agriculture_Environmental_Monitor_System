@@ -87,6 +87,13 @@ class _DashboardContent extends StatelessWidget {
                 avatar: Icon(Icons.history, size: 18),
                 label: Text('Dữ liệu cũ / cache'),
               ),
+            if (telemetry.queueDropped > 0)
+              Chip(
+                avatar: const Icon(Icons.sd_card_alert_outlined, size: 18),
+                label: Text(
+                  'Bộ nhớ offline đầy: mất ${telemetry.queueDropped} bản ghi',
+                ),
+              ),
             for (final alarm in alarmsFromMask(telemetry.alarmMask))
               Chip(
                 avatar: Icon(
