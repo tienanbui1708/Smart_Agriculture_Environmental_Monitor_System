@@ -88,9 +88,11 @@ vượt ngưỡng hoặc thiết bị mất kết nối.
 - [x] `GET /api/v1/alerts`, `GET /api/v1/devices/{id}/alerts`, `POST /api/v1/notifications/test`.
 - [x] ACL Mosquitto mẫu: thiết bị đọc `saems/{id}/config`, server ghi `saems/+/config`.
 - [x] Unit test: 14 test mới (cấu hình, alert engine, API với broker giả) + 3 test cũ đạt.
-- [ ] 🔧 Triển khai lên Pi: chép file mới, cập nhật ACL thật, thêm biến Telegram vào `.env`,
-  restart `saems-mqtt saems-ingestor saems-api`. Tailscale SSH đang bị chặn nên cần
-  vào Pi qua LAN.
+- [x] Triển khai lên Pi (2026-11-24): sao lưu `/home/admin/backups/saems-20261124-180131`,
+  chép code commit `e788e0c`, thêm 2 dòng ACL `config`, restart 4 service; Pi chạy 13 test
+  (4 test API skip vì Pi không có httpx). `POST /notifications/test` gửi Telegram thành công;
+  offline monitor tạo cảnh báo mất kết nối cho `farm-01` (im lặng từ 2026-10-10).
+- [ ] Hiển thị thời gian mất kết nối dạng ngày/giờ thay vì "64815 phút".
 
 ### App
 
@@ -176,3 +178,4 @@ vượt ngưỡng hoặc thiết bị mất kết nối.
 |---|---|
 | 2026-11-07 | Tạo plan, chốt quyết định, bắt đầu GĐ A trên nhánh `feature/prd-completion`. |
 | 2026-11-07 | GĐ A xong phần code: firmware build đạt, host test 29 checks, server 17 test, app 29 test. Chờ flash board và triển khai Pi để nghiệm thu. |
+| 2026-11-24 | Cài SSH key laptop → Pi. Triển khai server GĐ A lên Pi, Telegram hoạt động. Còn: flash ESP32, cài app lên máy Android. |
