@@ -59,6 +59,16 @@ class ConfigurationTests(unittest.TestCase):
             {"telemetry_interval_s": True},
             {"power_mode": "turbo"},
             {"wifi_password": "secret"},
+            {"auto_watering": {"enabled": True}},
+            {"auto_watering": {"enabled": 1, "soil_moisture_threshold_pct": 30,
+                               "pump_max_runtime_sec": 30, "pump_min_rest_sec": 600}},
+            {"auto_watering": {"enabled": True, "soil_moisture_threshold_pct": 0,
+                               "pump_max_runtime_sec": 30, "pump_min_rest_sec": 600}},
+            {"auto_watering": {"enabled": True, "soil_moisture_threshold_pct": 30,
+                               "pump_max_runtime_sec": 3601, "pump_min_rest_sec": 600}},
+            {"auto_watering": {"enabled": True, "soil_moisture_threshold_pct": 30,
+                               "pump_max_runtime_sec": 30, "pump_min_rest_sec": 600,
+                               "pump_gpio": 4}},
         ]
         for document in invalid:
             with self.subTest(document=document):
@@ -76,7 +86,17 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(document["thresholds"][4], 35.0)
         # Firmware rejects credential keys over MQTT; never produce them.
         self.assertLessEqual(set(document), {"config_version", "telemetry_interval_s",
-                                             "power_mode", "thresholds"})
+                                             "power_mode", "thresholds", "irrigation"})
+
+    def test_auto_watering_document(self):
+        configuration = device_config.validate_configuration({
+            "auto_watering": {"enabled": True, "soil_moisture_threshold_pct": 30,
+                              "pump_max_runtime_sec": 20, "pump_min_rest_sec": 1800},
+        })
+        document = device_config.device_document(configuration, 2)
+        self.assertEqual(document["irrigation"], [1, 30, 20, 1800])
+        unmanaged = device_config.device_document(device_config.validate_configuration({}), 3)
+        self.assertNotIn("irrigation", unmanaged)
 
     def test_store_increments_version(self):
         connection = database()
@@ -220,6 +240,28 @@ class ApiTests(unittest.TestCase):
                                    json={"thresholds": {"humidity_pct": {"min": 90, "max": 10}}})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.published, [])
+
+    def test_battery_sim_command(self):
+        response = self.client.post("/api/v1/devices/farm-01/commands/battery-sim",
+                                    json={"pct": 15})
+        self.assertEqual(response.status_code, 200, response.text)
+        topic, payload, retain = self.published[0]
+        self.assertEqual(topic, "saems/farm-01/commands")
+        self.assertEqual((payload["command"], payload["pct"]), ("battery_sim", 15.0))
+        self.assertFalse(retain)
+        self.assertEqual(self.client.post("/api/v1/devices/farm-01/commands/battery-sim",
+                                          json={"pct": 120}).status_code, 422)
+
+    def test_put_auto_watering(self):
+        response = self.client.put(
+            "/api/v1/devices/farm-01/configuration",
+            json={"auto_watering": {"enabled": True, "soil_moisture_threshold_pct": 35,
+                                    "pump_max_runtime_sec": 30, "pump_min_rest_sec": 900}},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.published[0][1]["irrigation"], [1, 35, 30, 900])
+        body = self.client.get("/api/v1/devices/farm-01/configuration").json()
+        self.assertTrue(body["configuration"]["auto_watering"]["enabled"])
 
     def test_alert_list_and_unconfigured_telegram(self):
         self.assertEqual(self.client.get("/api/v1/alerts").json()["count"], 0)

@@ -25,6 +25,14 @@ METRIC_NAMES = tuple(metric[0] for metric in METRICS)
 POWER_MODES = ("direct", "light", "battery")
 INTERVAL_RANGE = (1, 3600)
 OFFLINE_ALERT_RANGE = (60, 86400)
+# Same limits as firmware irrigation.h. The device additionally caps one
+# pump run at CONFIG_SAEMS_RELAY_MAX_ON_SECONDS (60 s by default).
+WATERING_THRESHOLD_RANGE = (1, 95)
+WATERING_RUNTIME_RANGE = (1, 3600)
+WATERING_REST_RANGE = (0, 86400)
+AUTO_WATERING_KEYS = (
+    "enabled", "soil_moisture_threshold_pct", "pump_max_runtime_sec", "pump_min_rest_sec",
+)
 
 
 def empty_thresholds() -> dict[str, dict[str, float | None]]:
@@ -41,6 +49,7 @@ def default_configuration() -> dict[str, Any]:
         "power_mode": None,
         "offline_alert_after_s": None,
         "thresholds": empty_thresholds(),
+        "auto_watering": None,
     }
 
 
@@ -66,6 +75,49 @@ def _optional_int(value: Any, field: str, bounds: tuple[int, int]):
     return value
 
 
+def _required_int(value: Any, field: str, bounds: tuple[int, int]) -> int:
+    if value is None:
+        raise ValueError(f"{field} is required")
+    return _optional_int(value, field, bounds)
+
+
+def validate_auto_watering(value: Any) -> dict[str, Any] | None:
+    """Pulse watering: run up to pump_max_runtime_sec when soil is below the
+    threshold, then rest pump_min_rest_sec before the next automatic run."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("auto_watering must be an object or null")
+    unknown = set(value) - set(AUTO_WATERING_KEYS)
+    if unknown:
+        raise ValueError(f"unknown auto_watering keys: {', '.join(sorted(unknown))}")
+    enabled = value.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ValueError("auto_watering.enabled must be true or false")
+    return {
+        "enabled": enabled,
+        "soil_moisture_threshold_pct": _required_int(
+            value.get("soil_moisture_threshold_pct"),
+            "auto_watering.soil_moisture_threshold_pct", WATERING_THRESHOLD_RANGE),
+        "pump_max_runtime_sec": _required_int(
+            value.get("pump_max_runtime_sec"),
+            "auto_watering.pump_max_runtime_sec", WATERING_RUNTIME_RANGE),
+        "pump_min_rest_sec": _required_int(
+            value.get("pump_min_rest_sec"),
+            "auto_watering.pump_min_rest_sec", WATERING_REST_RANGE),
+    }
+
+
+def auto_watering_to_array(value: dict[str, Any]) -> list[int]:
+    """Firmware order: [enabled, start_below_pct, max_runtime_s, min_rest_s]."""
+    return [
+        1 if value["enabled"] else 0,
+        value["soil_moisture_threshold_pct"],
+        value["pump_max_runtime_sec"],
+        value["pump_min_rest_sec"],
+    ]
+
+
 def validate_configuration(document: Any) -> dict[str, Any]:
     """Return a normalized configuration or raise ValueError.
 
@@ -74,7 +126,8 @@ def validate_configuration(document: Any) -> dict[str, Any]:
     """
     if not isinstance(document, dict):
         raise ValueError("configuration must be a JSON object")
-    allowed = {"telemetry_interval_s", "power_mode", "offline_alert_after_s", "thresholds"}
+    allowed = {"telemetry_interval_s", "power_mode", "offline_alert_after_s", "thresholds",
+               "auto_watering"}
     unknown = set(document) - allowed
     if unknown:
         raise ValueError(f"unknown configuration keys: {', '.join(sorted(unknown))}")
@@ -90,6 +143,7 @@ def validate_configuration(document: Any) -> dict[str, Any]:
     if power_mode is not None and power_mode not in POWER_MODES:
         raise ValueError(f"power_mode must be one of {', '.join(POWER_MODES)} or null")
     result["power_mode"] = power_mode
+    result["auto_watering"] = validate_auto_watering(document.get("auto_watering"))
 
     thresholds = document.get("thresholds") or {}
     if not isinstance(thresholds, dict):
@@ -127,8 +181,9 @@ def thresholds_to_array(thresholds: dict[str, dict[str, float | None]]) -> list[
 def device_document(configuration: dict[str, Any], version: int) -> dict[str, Any]:
     """Payload for the retained MQTT config topic.
 
-    Unmanaged (null) interval/power mode are omitted so the device keeps its
-    local value; thresholds are always sent once the server owns them.
+    Unmanaged (null) interval/power mode/auto_watering are omitted so the
+    device keeps its local value; thresholds are always sent once the server
+    owns them.
     """
     document: dict[str, Any] = {"config_version": version}
     if configuration["telemetry_interval_s"] is not None:
@@ -136,6 +191,8 @@ def device_document(configuration: dict[str, Any], version: int) -> dict[str, An
     if configuration["power_mode"] is not None:
         document["power_mode"] = configuration["power_mode"]
     document["thresholds"] = thresholds_to_array(configuration["thresholds"])
+    if configuration.get("auto_watering") is not None:
+        document["irrigation"] = auto_watering_to_array(configuration["auto_watering"])
     return document
 
 

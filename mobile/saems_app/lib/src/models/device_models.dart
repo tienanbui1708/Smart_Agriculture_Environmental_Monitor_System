@@ -1,5 +1,6 @@
 import 'telemetry.dart';
 import 'thresholds.dart';
+import 'watering.dart';
 
 class DeviceStatus {
   const DeviceStatus({
@@ -35,6 +36,7 @@ class DeviceConfig {
     this.powerMode = 'direct',
     this.configVersion = 0,
     this.thresholds = const ThresholdConfig({}),
+    this.autoWatering,
   });
 
   final String deviceId;
@@ -47,6 +49,9 @@ class DeviceConfig {
   final int configVersion;
   final ThresholdConfig thresholds;
 
+  /// null when the firmware predates automatic watering.
+  final AutoWatering? autoWatering;
+
   factory DeviceConfig.fromJson(Map<String, dynamic> json) => DeviceConfig(
     deviceId: json['device_id']?.toString() ?? '',
     telemetryIntervalSeconds:
@@ -56,6 +61,7 @@ class DeviceConfig {
     powerMode: json['power_mode']?.toString() ?? 'direct',
     configVersion: int.tryParse(json['config_version']?.toString() ?? '') ?? 0,
     thresholds: ThresholdConfig.fromDeviceArray(json['thresholds']),
+    autoWatering: AutoWatering.fromDeviceArray(json['irrigation']),
   );
 
   Map<String, dynamic> toJson() => {
@@ -65,6 +71,7 @@ class DeviceConfig {
     'soil_wet_raw': soilWetRaw,
     'power_mode': powerMode,
     'thresholds': thresholds.toDeviceArray(),
+    'irrigation': ?autoWatering?.toDeviceArray(),
   };
 }
 

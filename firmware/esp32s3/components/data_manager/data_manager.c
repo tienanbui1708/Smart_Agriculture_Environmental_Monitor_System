@@ -77,7 +77,8 @@ esp_err_t data_manager_build_telemetry(
 {
     if (snapshot == NULL || metadata == NULL || payload == NULL ||
         payload_size == 0 || metadata->device_id == NULL ||
-        metadata->pump_state == NULL) {
+        metadata->pump_state == NULL || metadata->battery_source == NULL ||
+        metadata->battery_state == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -86,6 +87,8 @@ esp_err_t data_manager_build_telemetry(
     char soil_json[24];
     char light_json[24];
     char soil_raw_json[16];
+    char battery_json[24];
+    char pump_reason_json[24];
     char timestamp_json[32];
     const char *timestamp_source = NULL;
 
@@ -105,6 +108,16 @@ esp_err_t data_manager_build_telemetry(
                       sizeof(light_json),
                       snapshot->light_valid,
                       snapshot->light_lux);
+    format_json_float(battery_json,
+                      sizeof(battery_json),
+                      metadata->battery_valid,
+                      metadata->battery_pct);
+    if (metadata->pump_reason != NULL) {
+        (void)snprintf(pump_reason_json, sizeof(pump_reason_json),
+                       "\"%s\"", metadata->pump_reason);
+    } else {
+        (void)snprintf(pump_reason_json, sizeof(pump_reason_json), "null");
+    }
     (void)format_timestamp(
         timestamp_json, sizeof(timestamp_json), &timestamp_source);
     if (snapshot->soil_raw_valid) {
@@ -136,8 +149,11 @@ esp_err_t data_manager_build_telemetry(
         "\"soil_raw\":%s,"
         "\"soil_digital\":%s,"
         "\"light_lux\":%s,"
-        "\"battery_pct\":null,"
+        "\"battery_pct\":%s,"
+        "\"battery_source\":\"%s\","
+        "\"battery_state\":\"%s\","
         "\"pump_state\":\"%s\","
+        "\"pump_reason\":%s,"
         "\"config_version\":%" PRIu32 ","
         "\"alarm_mask\":%u}",
         SAEMS_TELEMETRY_SCHEMA_VERSION,
@@ -157,7 +173,11 @@ esp_err_t data_manager_build_telemetry(
         soil_raw_json,
         snapshot->soil_raw_valid ? (snapshot->soil_digital ? "true" : "false") : "null",
         light_json,
+        battery_json,
+        metadata->battery_source,
+        metadata->battery_state,
         metadata->pump_state,
+        pump_reason_json,
         metadata->config_version,
         (unsigned)metadata->alarm_mask);
 

@@ -46,6 +46,12 @@ class PumpCommand(BaseModel):
         le=86400,
     )
 
+
+class BatterySimCommand(BaseModel):
+    """Set the simulated battery level (firmware SAEMS_BATTERY_SOURCE_SIMULATED)."""
+    pct: float = Field(ge=0, le=100)
+
+
 notifier = notifier_from_env()
 
 app = FastAPI(title="SAEMS Mini Server API", version="0.4.0")
@@ -125,7 +131,8 @@ def row_to_telemetry(row):
         key: raw[key] for key in (
             "schema_version", "data_mode", "sensor_health", "sensor_status",
             "uptime_ms", "uptime_s", "timestamp_source", "soil_raw", "soil_digital",
-            "config_version", "alarm_mask",
+            "config_version", "alarm_mask", "battery_source", "battery_state",
+            "pump_reason",
         ) if isinstance(raw, dict) and key in raw
     }
     return {
@@ -258,6 +265,21 @@ def command_pump(device_id: str, command: PumpCommand):
         "state": command.state,
         "duration_s": command.duration_s,
     }
+
+
+@app.post("/api/v1/devices/{device_id}/commands/battery-sim")
+def command_battery_sim(device_id: str, command: BatterySimCommand):
+    """Demo only: set the battery level of a device built with a simulated
+    battery source. Devices with a real or no battery ignore the command."""
+    validate_device_id(device_id)
+    request_id = uuid4().hex
+    payload = json.dumps(
+        {"command": "battery_sim", "pct": round(command.pct, 1), "request_id": request_id},
+        separators=(",", ":"),
+    )
+    publish_mqtt(f"saems/{device_id}/commands", payload, retain=False)
+    return {"status": "queued", "device_id": device_id, "request_id": request_id,
+            "pct": round(command.pct, 1)}
 
 
 @app.get("/api/v1/devices/{device_id}/status")

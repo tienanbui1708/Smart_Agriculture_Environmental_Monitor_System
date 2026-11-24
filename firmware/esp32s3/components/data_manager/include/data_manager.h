@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -13,6 +14,14 @@ typedef struct {
     uint32_t boot_id;
     uint32_t sequence;
     const char *pump_state;
+    /* Last pump transition: "auto", "manual", "safety_off",
+     * "low_battery" or NULL (JSON null) when none since boot. */
+    const char *pump_reason;
+    /* Battery: source "none"/"adc"/"simulated", level name. */
+    bool battery_valid;
+    float battery_pct;
+    const char *battery_source;
+    const char *battery_state;
     /* Server configuration version applied on the device (0 = local). */
     uint32_t config_version;
     /* Active threshold alarms, bit order in threshold_monitor.h. */

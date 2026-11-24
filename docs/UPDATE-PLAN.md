@@ -25,7 +25,7 @@ Ký hiệu: `[x]` xong · `[~]` đang làm · `[ ]` chưa làm · 🔧 cần ph�
 | GĐ | Nội dung | Mục PRD | Trạng thái |
 |---|---|---|---|
 | A | Ngưỡng, cấu hình từ xa, cảnh báo Telegram | Output Server "Cảnh báo", Input Device "cập nhật ngưỡng" | `[x]` code · 🔧 chờ nghiệm thu board/Pi |
-| B | Kịch bản máy bơm và pin (thật + mô phỏng) | Battery Level, Relay bơm | `[ ]` |
+| B | Kịch bản máy bơm và pin (thật + mô phỏng) | Battery Level, Relay bơm | `[x]` code · 🔧 chờ board |
 | C | Lưu offline bằng LittleFS ring buffer | Offline Resilience "không mất dữ liệu" | `[ ]` |
 | D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[ ]` |
 | E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[ ]` |
@@ -92,7 +92,7 @@ vượt ngưỡng hoặc thiết bị mất kết nối.
   chép code commit `e788e0c`, thêm 2 dòng ACL `config`, restart 4 service; Pi chạy 13 test
   (4 test API skip vì Pi không có httpx). `POST /notifications/test` gửi Telegram thành công;
   offline monitor tạo cảnh báo mất kết nối cho `farm-01` (im lặng từ 2026-10-10).
-- [ ] Hiển thị thời gian mất kết nối dạng ngày/giờ thay vì "64815 phút".
+- [x] Hiển thị thời gian mất kết nối dạng ngày/giờ và giờ Việt Nam ("45 ngày", "3 giờ 5 phút"); đã triển khai Pi 2026-11-24.
 
 ### App
 
@@ -120,17 +120,37 @@ vượt ngưỡng hoặc thiết bị mất kết nối.
 
 ## GĐ B — Kịch bản máy bơm và pin
 
-- [ ] Tưới tự động theo Contract: `auto_watering_enabled`, `soil_moisture_threshold_pct`,
-  `pump_max_runtime_sec`, thêm thời gian nghỉ tối thiểu giữa hai lần tưới.
-- [ ] Lệnh bơm tay từ App/Server giữ nguyên; telemetry có `pump_reason`
-  (`auto` / `manual` / `safety_off`).
-- [ ] Kconfig `SAEMS_PUMP_SIMULATED`: chỉ đóng relay và log khi chưa có bơm/nguồn.
-- [ ] Nguồn đo pin: `none` / `adc` (GPIO6, cầu chia áp, đường cong LiPo) / `simulated`.
-- [ ] Pin thấp → tự chuyển Battery mode, tăng chu kỳ; pin cạn → tắt bơm, Deep Sleep dài.
-- [ ] Kiểm tra lại ngân sách 512 byte cho đọc cấu hình BLE khi thêm khóa tưới tự động
-  (cấu hình hiện tối đa ~483 byte); nếu vượt, chuyển đọc cấu hình sang frame như telemetry.
-- [ ] App: điều khiển tưới tự động, hiển thị pin; server: cảnh báo pin yếu dùng ngưỡng `battery_min`.
-- [ ] Tài liệu nối dây cầu chia áp và relay/bơm.
+Chi tiết nối dây, cấu hình và kịch bản thử: [`pump-battery.md`](pump-battery.md).
+
+- [x] Component `irrigation` (C thuần): tưới theo xung — bật khi đất dưới ngưỡng, bơm tối
+  đa `pump_max_runtime_sec`, dừng sớm khi đất đạt ngưỡng + 5 %, nghỉ `pump_min_rest_sec`
+  (tính qua Deep Sleep bằng đồng hồ RTC). Không tưới khi cảm biến đất lỗi/chưa hiệu chuẩn.
+- [x] Cấu hình thiết bị dạng mảng gọn `"irrigation":[bật, %, s, s]` qua BLE/AP/MQTT
+  (NVS blob `irrigation`); cấu hình BLE tối đa 495/512 byte. Đổi qua BLE/AP đặt
+  `config_version = 0` như ngưỡng.
+- [x] Lệnh bơm tay giữ nguyên; telemetry có `pump_reason` (`auto` / `manual` /
+  `safety_off` / `low_battery`). Trạng thái bơm có mutex chung cho timer, lệnh và tưới tự động.
+- [x] Kconfig `SAEMS_PUMP_SIMULATED` (mặc định bật): vẫn đóng relay, log `[simulated pump]`.
+- [x] Component `battery_monitor`: nguồn `none` / `adc` (GPIO6, cầu chia ×2, hiệu chuẩn
+  curve fitting, đường xả LiPo, dùng chung handle ADC1 với cảm biến đất) / `simulated`
+  (giữ trong RTC, lệnh `battery_sim`). Telemetry có `battery_pct`, `battery_source`, `battery_state`.
+- [x] Pin yếu (< 20 %, trễ 3 %) → tự vào Battery/Deep Sleep không ghi đè NVS, chu kỳ ≥ 600 s;
+  pin cạn (< 5 %) → tắt bơm, khóa lệnh bật bơm, Deep Sleep 3600 s. Battery mode chờ lần bơm
+  đang chạy xong rồi mới ngủ.
+- [x] Đánh giá ngưỡng `battery_min` trên thiết bị (`alarm_mask` bit8) và trên server (Telegram).
+- [x] Host test `tests/test_pump_battery.c` (269 checks); build ESP-IDF đạt cả 3 cấu hình
+  pin (none / simulated / adc), không warning, binary ~0x144000 (58 % trống).
+- [x] Server: `auto_watering` trong `/configuration` (publish `irrigation`),
+  `POST /commands/battery-sim`, API trả thêm `battery_source`, `battery_state`, `pump_reason`.
+  21 test đạt.
+- [x] App: mục **Tưới tự động** trong Ngưỡng & chu kỳ (Server có ô "Server quản lý"),
+  dashboard hiện lý do bơm và thẻ pin (đánh dấu "mô phỏng"). `flutter analyze` sạch, 34 test.
+- [x] Tài liệu nối dây relay/bơm và cầu chia áp, `api-contract.md`, `direct-connection-protocol.md`.
+
+### Nghiệm thu GĐ B 🔧
+
+Theo mục 4 của [`pump-battery.md`](pump-battery.md): tưới tự động, dừng sớm, ngắt an toàn,
+pin yếu, pin cạn, hồi pin — chạy với `SAEMS_BATTERY_SOURCE_SIMULATED=y`.
 
 ## GĐ C — Lưu offline bền hơn
 
@@ -179,3 +199,5 @@ vượt ngưỡng hoặc thiết bị mất kết nối.
 | 2026-11-07 | Tạo plan, chốt quyết định, bắt đầu GĐ A trên nhánh `feature/prd-completion`. |
 | 2026-11-07 | GĐ A xong phần code: firmware build đạt, host test 29 checks, server 17 test, app 29 test. Chờ flash board và triển khai Pi để nghiệm thu. |
 | 2026-11-24 | Cài SSH key laptop → Pi. Triển khai server GĐ A lên Pi, Telegram hoạt động. Còn: flash ESP32, cài app lên máy Android. |
+| 2026-11-24 | Cài app GĐ A lên Samsung A24 và Pixel 6 (sửa lỗi Kotlin incremental do khác ổ đĩa). Push nhánh lên GitHub. Board đã tháo, chờ lắp lại. |
+| 2026-11-24 | GĐ B xong phần code (firmware, server, app, tài liệu); server GĐ B triển khai lên Pi. Chờ board để nghiệm thu GĐ A + B. |

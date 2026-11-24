@@ -5,6 +5,7 @@ import '../models/data_source.dart';
 import '../models/telemetry.dart';
 import '../models/thresholds.dart';
 import '../state/app_state.dart';
+import '../models/watering.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -147,14 +148,41 @@ class _DashboardContent extends StatelessWidget {
             subtitle: Text(
               telemetry.pumpState == null
                   ? 'Chưa có trạng thái'
-                  : 'Đang ${telemetry.pumpState}',
+                  : [
+                      'Đang ${telemetry.pumpState}',
+                      if (pumpReasonLabel(telemetry.pumpReason).isNotEmpty)
+                        pumpReasonLabel(telemetry.pumpReason),
+                    ].join(' · '),
             ),
             trailing: Text(_time(telemetry.receivedAt ?? telemetry.timestamp)),
           ),
         ),
+        if (telemetry.batteryPct != null || telemetry.batterySource == 'none')
+          Card(
+            child: ListTile(
+              leading: CircleAvatar(child: Icon(_batteryIcon(telemetry))),
+              title: Text(
+                telemetry.batteryPct == null
+                    ? 'Nguồn USB (không đo pin)'
+                    : 'Pin ${_format(telemetry.batteryPct, '%')}'
+                          '${telemetry.batterySource == 'simulated' ? ' (mô phỏng)' : ''}',
+              ),
+              subtitle: batteryStateLabel(telemetry.batteryState).isEmpty
+                  ? null
+                  : Text(batteryStateLabel(telemetry.batteryState)),
+            ),
+          ),
       ],
     );
   }
+
+  static IconData _batteryIcon(Telemetry telemetry) =>
+      switch (telemetry.batteryState) {
+        'critical' => Icons.battery_alert,
+        'low' => Icons.battery_2_bar,
+        'normal' => Icons.battery_full,
+        _ => Icons.power,
+      };
 
   static String _format(double? value, String unit) =>
       value == null ? '--' : '${value.toStringAsFixed(1)}$unit';

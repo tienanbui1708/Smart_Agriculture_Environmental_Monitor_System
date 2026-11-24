@@ -9,6 +9,7 @@
 
 #include "sdkconfig.h"
 
+#include "battery_monitor.h"
 #include "config_manager.h"
 #include "data_manager.h"
 #include "direct_connection.h"
@@ -18,11 +19,13 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_rtc_time.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "irrigation.h"
 #include "mqtt_manager.h"
 #include "network_manager.h"
 #include "nvs.h"
@@ -47,6 +50,20 @@
 
 #ifndef CONFIG_SAEMS_BATTERY_MAINTENANCE_WINDOW_SECONDS
 #define CONFIG_SAEMS_BATTERY_MAINTENANCE_WINDOW_SECONDS 10
+#endif
+
+#ifndef CONFIG_SAEMS_BATTERY_LOW_INTERVAL_SECONDS
+#define CONFIG_SAEMS_BATTERY_LOW_INTERVAL_SECONDS 600
+#endif
+
+#ifndef CONFIG_SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS
+#define CONFIG_SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS 3600
+#endif
+
+#ifdef CONFIG_SAEMS_PUMP_SIMULATED
+#define SAEMS_PUMP_SIMULATED true
+#else
+#define SAEMS_PUMP_SIMULATED false
 #endif
 
 #ifdef CONFIG_SAEMS_BH1750_ADDRESS_HIGH
@@ -85,7 +102,12 @@ typedef struct {
     ap_server_t ap_server;
     ble_manager_t ble_manager;
     esp_timer_handle_t pump_timer;
+    SemaphoreHandle_t pump_mutex;
     SemaphoreHandle_t latest_mutex;
+    battery_monitor_t battery;
+    battery_reading_t battery_reading;
+    /* Pump state and automatic watering memory; guarded by pump_mutex. */
+    irrigation_state_t irrigation;
     saems_config_t config;
     char latest_payload[SAEMS_PAYLOAD_SIZE];
     uint32_t boot_id;
@@ -102,16 +124,43 @@ typedef struct {
     uint32_t next_sequence;
     uint32_t sequence_limit;
     uint16_t alarm_mask;
+    /* Survive Deep Sleep: battery hysteresis and the watering rest time
+     * (esp_rtc_get_time_us keeps counting while asleep). */
+    uint8_t battery_level;
+    uint8_t pump_reason;
+    bool has_last_auto_stop;
+    int64_t last_auto_stop_s;
 } application_rtc_state_t;
 
 static const char *TAG = "APPLICATION_MANAGER";
 static application_context_t application;
 RTC_DATA_ATTR static application_rtc_state_t rtc_state;
 
+static bool battery_saving_required(void)
+{
+    return application.battery_reading.level == BATTERY_LEVEL_LOW ||
+           application.battery_reading.level == BATTERY_LEVEL_CRITICAL;
+}
+
+static uint32_t effective_interval_seconds(void)
+{
+    uint32_t interval = application.config.telemetry_interval_s;
+    uint32_t minimum = 0U;
+    if (application.battery_reading.level == BATTERY_LEVEL_CRITICAL) {
+        minimum = CONFIG_SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS;
+    } else if (application.battery_reading.level == BATTERY_LEVEL_LOW) {
+        minimum = CONFIG_SAEMS_BATTERY_LOW_INTERVAL_SECONDS;
+    }
+    return interval > minimum ? interval : minimum;
+}
+
 static power_manager_mode_t configured_power_mode(
     const saems_config_t *config)
 {
-    if (config->power_mode == SAEMS_POWER_MODE_BATTERY) {
+    /* Low battery overrides the stored mode without rewriting NVS, so the
+     * user's choice comes back once the battery recovers. */
+    if (battery_saving_required() ||
+        config->power_mode == SAEMS_POWER_MODE_BATTERY) {
         return POWER_MANAGER_DEEP_SLEEP;
     }
     if (config->power_mode == SAEMS_POWER_MODE_LIGHT) {
@@ -233,6 +282,16 @@ static void save_rtc_sequence_state(void)
     rtc_state.next_sequence = application.sequence;
     rtc_state.sequence_limit = application.sequence_limit;
     rtc_state.alarm_mask = application.alarm_mask;
+    rtc_state.battery_level = (uint8_t)application.battery_reading.level;
+    if (application.pump_mutex != NULL) {
+        xSemaphoreTake(application.pump_mutex, portMAX_DELAY);
+    }
+    rtc_state.pump_reason = (uint8_t)application.irrigation.reason;
+    rtc_state.has_last_auto_stop = application.irrigation.has_last_auto_stop;
+    rtc_state.last_auto_stop_s = application.irrigation.last_auto_stop_s;
+    if (application.pump_mutex != NULL) {
+        xSemaphoreGive(application.pump_mutex);
+    }
 }
 
 static esp_err_t initialize_sequence_state(uint32_t wakeup_causes)
@@ -245,6 +304,14 @@ static esp_err_t initialize_sequence_state(uint32_t wakeup_causes)
         application.sequence_limit = rtc_state.sequence_limit;
         /* Keep alarm hysteresis across Deep Sleep wake-ups. */
         application.alarm_mask = rtc_state.alarm_mask;
+        application.battery_reading.level =
+            (battery_level_t)rtc_state.battery_level;
+        application.battery.last.level =
+            (battery_level_t)rtc_state.battery_level;
+        application.irrigation.reason = (pump_reason_t)rtc_state.pump_reason;
+        application.irrigation.has_last_auto_stop =
+            rtc_state.has_last_auto_stop;
+        application.irrigation.last_auto_stop_s = rtc_state.last_auto_stop_s;
         ESP_LOGI(TAG,
                  "Resumed RTC sequence: boot=%08" PRIx32
                  " next=%" PRIu32 " limit=%" PRIu32,
@@ -265,39 +332,155 @@ static esp_err_t initialize_sequence_state(uint32_t wakeup_causes)
     return ESP_OK;
 }
 
-static void pump_timeout(void *arg)
+static int64_t monotonic_seconds(void)
 {
-    (void)arg;
-    if (application.relay_ready &&
-        relay_is_enabled(&application.relay, RELAY_CHANNEL_1)) {
-        (void)relay_set(&application.relay, RELAY_CHANNEL_1, false);
-        ESP_LOGW(TAG, "Pump safety timeout; relay CH1 OFF");
-    }
+    return (int64_t)(esp_rtc_get_time_us() / 1000000ULL);
 }
 
-static esp_err_t set_pump(bool enabled, uint32_t requested_duration_s)
+/* Caller holds pump_mutex. */
+static esp_err_t set_pump_locked(
+    bool enabled, uint32_t requested_duration_s, pump_reason_t reason)
 {
-    if (!application.relay_ready) {
-        return ESP_ERR_INVALID_STATE;
-    }
     (void)esp_timer_stop(application.pump_timer);
-    ESP_RETURN_ON_ERROR(
-        relay_set(&application.relay, RELAY_CHANNEL_1, enabled),
-        TAG,
-        "set pump relay");
+    const bool was_on = application.irrigation.pump_on;
+    const pump_reason_t previous_reason = application.irrigation.reason;
+    esp_err_t result = relay_set(&application.relay, RELAY_CHANNEL_1, enabled);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Set pump relay failed: %s", esp_err_to_name(result));
+        return result;
+    }
     if (!enabled) {
+        if (was_on && previous_reason == PUMP_REASON_AUTO) {
+            application.irrigation.has_last_auto_stop = true;
+            application.irrigation.last_auto_stop_s = monotonic_seconds();
+        }
+        application.irrigation.pump_on = false;
+        application.irrigation.reason = reason;
+        if (was_on) {
+            ESP_LOGI(TAG, "Pump OFF (%s)%s",
+                     pump_reason_name(reason),
+                     SAEMS_PUMP_SIMULATED ? " [simulated pump]" : "");
+        }
         return ESP_OK;
     }
     uint32_t duration = requested_duration_s;
     if (duration == 0 || duration > CONFIG_SAEMS_RELAY_MAX_ON_SECONDS) {
         duration = CONFIG_SAEMS_RELAY_MAX_ON_SECONDS;
     }
-    esp_err_t result = esp_timer_start_once(
+    result = esp_timer_start_once(
         application.pump_timer, (uint64_t)duration * 1000000ULL);
     if (result != ESP_OK) {
         (void)relay_set(&application.relay, RELAY_CHANNEL_1, false);
+        application.irrigation.pump_on = false;
+        return result;
     }
+    application.irrigation.pump_on = true;
+    application.irrigation.reason = reason;
+    ESP_LOGI(TAG, "Pump ON (%s) for %" PRIu32 " s%s",
+             pump_reason_name(reason), duration,
+             SAEMS_PUMP_SIMULATED ? " [simulated pump]" : "");
+    return ESP_OK;
+}
+
+static esp_err_t set_pump(
+    bool enabled, uint32_t requested_duration_s, pump_reason_t reason)
+{
+    if (!application.relay_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(application.pump_mutex, portMAX_DELAY);
+    esp_err_t result = ESP_OK;
+    if (enabled && application.battery_reading.level == BATTERY_LEVEL_CRITICAL) {
+        ESP_LOGW(TAG, "Pump start refused: battery critical");
+        result = ESP_ERR_INVALID_STATE;
+    } else {
+        result = set_pump_locked(enabled, requested_duration_s, reason);
+    }
+    xSemaphoreGive(application.pump_mutex);
     return result;
+}
+
+static bool pump_is_on(void)
+{
+    xSemaphoreTake(application.pump_mutex, portMAX_DELAY);
+    const bool on = application.irrigation.pump_on;
+    xSemaphoreGive(application.pump_mutex);
+    return on;
+}
+
+static void pump_timeout(void *arg)
+{
+    (void)arg;
+    if (!application.relay_ready) {
+        return;
+    }
+    xSemaphoreTake(application.pump_mutex, portMAX_DELAY);
+    if (application.irrigation.pump_on) {
+        /* The end of an automatic pulse is normal; anything else hit the
+         * safety limit. */
+        const pump_reason_t reason =
+            application.irrigation.reason == PUMP_REASON_AUTO
+                ? PUMP_REASON_AUTO
+                : PUMP_REASON_SAFETY_OFF;
+        (void)set_pump_locked(false, 0, reason);
+    }
+    xSemaphoreGive(application.pump_mutex);
+}
+
+static void run_irrigation(const sensor_snapshot_t *snapshot)
+{
+    if (!application.relay_ready) {
+        return;
+    }
+    const irrigation_inputs_t inputs = {
+        .soil_valid = snapshot->soil_moisture_valid,
+        .soil_pct = snapshot->soil_moisture_pct,
+        .battery_critical =
+            application.battery_reading.level == BATTERY_LEVEL_CRITICAL,
+        .now_s = monotonic_seconds(),
+    };
+    xSemaphoreTake(application.pump_mutex, portMAX_DELAY);
+    const irrigation_decision_t decision = irrigation_decide(
+        &application.config.irrigation, &application.irrigation, &inputs);
+    if (decision.action == IRRIGATION_START) {
+        ESP_LOGI(TAG, "Auto watering: soil %.1f%% < %u%%",
+                 (double)inputs.soil_pct,
+                 (unsigned)application.config.irrigation.start_below_pct);
+        (void)set_pump_locked(
+            true, application.config.irrigation.max_runtime_s, decision.reason);
+    } else if (decision.action == IRRIGATION_STOP) {
+        (void)set_pump_locked(false, 0, decision.reason);
+    }
+    xSemaphoreGive(application.pump_mutex);
+}
+
+/* Battery mode sleeps between samples; let a running pulse finish first so
+ * a watering command is not cut short, bounded by the relay safety limit. */
+static void wait_for_pump_before_sleep(void)
+{
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t limit = pdMS_TO_TICKS(
+        ((uint32_t)CONFIG_SAEMS_RELAY_MAX_ON_SECONDS + 1U) * 1000U);
+    while (pump_is_on() && (xTaskGetTickCount() - started) < limit) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    if (pump_is_on()) {
+        (void)set_pump(false, 0, PUMP_REASON_SAFETY_OFF);
+    }
+}
+
+static esp_err_t handle_battery_sim(const char *document)
+{
+    const char *pct = strstr(document, "\"pct\"");
+    if (pct == NULL || (pct = strchr(pct, ':')) == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *end = NULL;
+    const float value = strtof(pct + 1, &end);
+    if (end == pct + 1) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return battery_monitor_simulate(&application.battery, value);
 }
 
 static esp_err_t handle_command_json(
@@ -311,6 +494,9 @@ static esp_err_t handle_command_json(
     memcpy(document, json, json_length);
     document[json_length] = '\0';
     const char *command = strstr(document, "\"command\"");
+    if (command != NULL && strstr(command, "\"battery_sim\"") != NULL) {
+        return handle_battery_sim(document);
+    }
     bool valid_command = command == NULL || strstr(command, "\"pump\"") != NULL;
     const char *state = strstr(document, "\"state\"");
     bool enabled = false;
@@ -338,7 +524,7 @@ static esp_err_t handle_command_json(
     if (!valid_command || !valid_state) {
         return ESP_ERR_INVALID_ARG;
     }
-    return set_pump(enabled, duration_s);
+    return set_pump(enabled, duration_s, PUMP_REASON_MANUAL);
 }
 
 static esp_err_t provide_device_info(
@@ -350,9 +536,12 @@ static esp_err_t provide_device_info(
                           output_size,
                           "{\"device_id\":\"%s\",\"project\":\"SAEMS\","
                           "\"firmware_version\":\"%s\","
-                          "\"ble_protocol\":1,\"api_version\":1}",
+                          "\"ble_protocol\":1,\"api_version\":1,"
+                          "\"battery_source\":\"%s\",\"pump_simulated\":%s}",
                           application.config.device_id,
-                          description->version);
+                          description->version,
+                          battery_source_name(application.battery.source),
+                          SAEMS_PUMP_SIMULATED ? "true" : "false");
     return length < 0 || (size_t)length >= output_size
                ? ESP_ERR_INVALID_SIZE
                : ESP_OK;
@@ -482,7 +671,10 @@ static uint16_t evaluate_alarms(const sensor_snapshot_t *snapshot)
         snapshot->soil_moisture_pct;
     readings.reading[THRESHOLD_METRIC_LIGHT].valid = snapshot->light_valid;
     readings.reading[THRESHOLD_METRIC_LIGHT].value = snapshot->light_lux;
-    /* Battery measurement arrives in phase B; until then it stays invalid. */
+    readings.reading[THRESHOLD_METRIC_BATTERY].valid =
+        application.battery_reading.valid;
+    readings.reading[THRESHOLD_METRIC_BATTERY].value =
+        application.battery_reading.percent;
     const uint16_t mask = threshold_evaluate(
         &application.config.thresholds, &readings, application.alarm_mask);
     if (mask != application.alarm_mask) {
@@ -607,19 +799,36 @@ static void sampling_task(void *arg)
             snapshot.soil_health = SENSOR_HEALTH_UNAVAILABLE;
         }
 
+        battery_reading_t battery = {0};
+        if (battery_monitor_read(&application.battery, &battery) != ESP_OK) {
+            battery.valid = false;
+        }
+        application.battery_reading = battery;
+
         transition(APP_STATE_PROCESS_DATA);
         application.alarm_mask = evaluate_alarms(&snapshot);
+        run_irrigation(&snapshot);
+        bool pump_on = false;
+        pump_reason_t pump_reason = PUMP_REASON_NONE;
+        if (application.relay_ready) {
+            xSemaphoreTake(application.pump_mutex, portMAX_DELAY);
+            pump_on = application.irrigation.pump_on;
+            pump_reason = application.irrigation.reason;
+            xSemaphoreGive(application.pump_mutex);
+        }
         const char *pump_state = application.relay_ready
-                                     ? (relay_is_enabled(&application.relay,
-                                                         RELAY_CHANNEL_1)
-                                            ? "on"
-                                            : "off")
+                                     ? (pump_on ? "on" : "off")
                                      : "unknown";
         const telemetry_metadata_t metadata = {
             .device_id = application.config.device_id,
             .boot_id = application.boot_id,
             .sequence = application.sequence,
             .pump_state = pump_state,
+            .pump_reason = pump_reason_name(pump_reason),
+            .battery_valid = battery.valid,
+            .battery_pct = battery.percent,
+            .battery_source = battery_source_name(application.battery.source),
+            .battery_state = battery_level_name(battery.level),
             .config_version = application.config.config_version,
             .alarm_mask = application.alarm_mask,
         };
@@ -675,18 +884,19 @@ static void sampling_task(void *arg)
             ble_manager_is_connected(&application.ble_manager);
         bool sync_pending = storage_manager_pending_count(
                                 &application.storage_manager) > 0;
-        uint32_t idle_seconds = application.config.telemetry_interval_s;
+        const uint32_t interval_seconds = effective_interval_seconds();
+        uint32_t idle_seconds = interval_seconds;
         if (power_manager_is_deep_sleep(&application.power_manager)) {
             if (application.relay_ready) {
-                (void)relay_set(
-                    &application.relay, RELAY_CHANNEL_1, false);
+                wait_for_pump_before_sleep();
                 (void)relay_set(
                     &application.relay, RELAY_CHANNEL_2, false);
             }
+            save_rtc_sequence_state();
             uint32_t elapsed_seconds = (uint32_t)(
                 (xTaskGetTickCount() - cycle_started) / configTICK_RATE_HZ);
-            idle_seconds = elapsed_seconds < application.config.telemetry_interval_s
-                               ? application.config.telemetry_interval_s - elapsed_seconds
+            idle_seconds = elapsed_seconds < interval_seconds
+                               ? interval_seconds - elapsed_seconds
                                : 1U;
         }
         (void)power_manager_idle(&application.power_manager,
@@ -704,7 +914,8 @@ esp_err_t application_manager_start(void)
     ESP_LOGI(TAG, "Wake reason: %s (mask=0x%08" PRIx32 ")",
              wakeup_reason_name(wakeup_causes), wakeup_causes);
     application.latest_mutex = xSemaphoreCreateMutex();
-    if (application.latest_mutex == NULL) {
+    application.pump_mutex = xSemaphoreCreateMutex();
+    if (application.latest_mutex == NULL || application.pump_mutex == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -742,6 +953,8 @@ esp_err_t application_manager_start(void)
                    "%s",
                    CONFIG_SAEMS_AP_PASSWORD);
     defaults.telemetry_interval_s = CONFIG_SAEMS_TELEMETRY_INTERVAL_SECONDS;
+    threshold_limits_clear(&defaults.thresholds);
+    irrigation_config_default(&defaults.irrigation);
 #ifdef CONFIG_SAEMS_SOIL_SENSOR_ENABLED
     defaults.soil_enabled = true;
     defaults.soil_dry_raw = CONFIG_SAEMS_SOIL_DRY_RAW;
@@ -800,6 +1013,15 @@ esp_err_t application_manager_start(void)
     application.sensor_ready = result == ESP_OK;
     if (result != ESP_OK) {
         ESP_LOGW(TAG, "Sensor Manager degraded: %s", esp_err_to_name(result));
+    }
+    /* ADC1 allows one oneshot handle; share the soil sensor's when present. */
+    result = battery_monitor_init(
+        &application.battery,
+        application.sensor_manager.soil_ready
+            ? application.sensor_manager.soil.adc
+            : NULL);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Battery monitor unavailable: %s", esp_err_to_name(result));
     }
     result = relay_init(&application.relay, SAEMS_RELAY_ACTIVE_LOW);
     application.relay_ready = result == ESP_OK;
@@ -879,11 +1101,14 @@ esp_err_t application_manager_start(void)
         return ESP_ERR_NO_MEM;
     }
     ESP_LOGI(TAG,
-             "SAEMS application started: power=%s AP=%d BLE=%d pending=%u",
+             "SAEMS application started: power=%s AP=%d BLE=%d pending=%u "
+             "battery=%s pump=%s",
              power_manager_mode_name(application.power_manager.mode),
              application.config.ap_enabled,
              application.config.ble_enabled,
              (unsigned)storage_manager_pending_count(
-                 &application.storage_manager));
+                 &application.storage_manager),
+             battery_source_name(application.battery.source),
+             SAEMS_PUMP_SIMULATED ? "simulated" : "real");
     return ESP_OK;
 }

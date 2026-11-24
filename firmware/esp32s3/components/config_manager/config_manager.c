@@ -16,6 +16,8 @@
 #define CONFIG_DOCUMENT_MAX 1024
 #define THRESHOLD_BLOB_KEY "thresholds"
 #define THRESHOLD_BLOB_VERSION 1U
+#define IRRIGATION_BLOB_KEY "irrigation"
+#define IRRIGATION_BLOB_VERSION 1U
 
 /* Stored layout of the alarm limits. Bump the version when it changes. */
 typedef struct {
@@ -24,6 +26,16 @@ typedef struct {
     uint16_t enabled_mask;
     float value[THRESHOLD_LIMIT_COUNT];
 } threshold_blob_t;
+
+typedef struct {
+    uint8_t version;
+    uint8_t enabled;
+    uint8_t start_below_pct;
+    uint8_t reserved;
+    uint16_t max_runtime_s;
+    uint16_t reserved2;
+    uint32_t min_rest_s;
+} irrigation_blob_t;
 
 /* Keys the server must never change over MQTT. */
 static const char *const remote_forbidden_keys[] = {
@@ -214,6 +226,30 @@ static esp_err_t parse_optional_thresholds(
     return ESP_OK;
 }
 
+static esp_err_t parse_optional_irrigation(
+    const char *json, irrigation_config_t *irrigation)
+{
+    const char *position = json_value(json, "irrigation");
+    if (position == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    irrigation_config_t parsed;
+    if (!irrigation_config_from_json(position, &parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *irrigation = parsed;
+    return ESP_OK;
+}
+
+static bool irrigation_equal(
+    const irrigation_config_t *left, const irrigation_config_t *right)
+{
+    return left->enabled == right->enabled &&
+           left->start_below_pct == right->start_below_pct &&
+           left->max_runtime_s == right->max_runtime_s &&
+           left->min_rest_s == right->min_rest_s;
+}
+
 static bool thresholds_equal(
     const threshold_limits_t *left, const threshold_limits_t *right)
 {
@@ -232,7 +268,8 @@ static bool server_managed_changed(
 {
     return before->telemetry_interval_s != after->telemetry_interval_s ||
            before->power_mode != after->power_mode ||
-           !thresholds_equal(&before->thresholds, &after->thresholds);
+           !thresholds_equal(&before->thresholds, &after->thresholds) ||
+           !irrigation_equal(&before->irrigation, &after->irrigation);
 }
 
 static void load_thresholds(nvs_handle_t handle, threshold_limits_t *limits)
@@ -266,6 +303,38 @@ static esp_err_t save_thresholds(
         blob.value[index] = limits->value[index];
     }
     return nvs_set_blob(handle, THRESHOLD_BLOB_KEY, &blob, sizeof(blob));
+}
+
+static void load_irrigation(nvs_handle_t handle, irrigation_config_t *config)
+{
+    irrigation_blob_t blob;
+    size_t blob_size = sizeof(blob);
+    if (nvs_get_blob(handle, IRRIGATION_BLOB_KEY, &blob, &blob_size) != ESP_OK ||
+        blob_size != sizeof(blob) || blob.version != IRRIGATION_BLOB_VERSION) {
+        return;
+    }
+    const irrigation_config_t stored = {
+        .enabled = blob.enabled != 0U,
+        .start_below_pct = blob.start_below_pct,
+        .max_runtime_s = blob.max_runtime_s,
+        .min_rest_s = blob.min_rest_s,
+    };
+    if (irrigation_config_is_valid(&stored)) {
+        *config = stored;
+    }
+}
+
+static esp_err_t save_irrigation(
+    nvs_handle_t handle, const irrigation_config_t *config)
+{
+    irrigation_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.version = (uint8_t)IRRIGATION_BLOB_VERSION;
+    blob.enabled = config->enabled ? 1U : 0U;
+    blob.start_below_pct = config->start_below_pct;
+    blob.max_runtime_s = config->max_runtime_s;
+    blob.min_rest_s = config->min_rest_s;
+    return nvs_set_blob(handle, IRRIGATION_BLOB_KEY, &blob, sizeof(blob));
 }
 
 static esp_err_t save_locked(config_manager_t *manager)
@@ -340,6 +409,9 @@ static esp_err_t save_locked(config_manager_t *manager)
         result = save_thresholds(handle, &manager->current.thresholds);
     }
     if (result == ESP_OK) {
+        result = save_irrigation(handle, &manager->current.irrigation);
+    }
+    if (result == ESP_OK) {
         result = nvs_set_u32(
             handle, "cfg_ver", manager->current.config_version);
     }
@@ -401,6 +473,7 @@ esp_err_t config_manager_init(
                 (saems_power_mode_t)stored_power_mode;
         }
         load_thresholds(handle, &manager->current.thresholds);
+        load_irrigation(handle, &manager->current.irrigation);
         load_u32(handle, "cfg_ver", &manager->current.config_version);
         nvs_close(handle);
     } else if (result != ESP_ERR_NVS_NOT_FOUND) {
@@ -577,6 +650,11 @@ esp_err_t config_manager_update_json(
         xSemaphoreGive(manager_mutex(manager));
         return parse_result;
     }
+    parse_result = parse_optional_irrigation(document, &updated.irrigation);
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
     /* A local (BLE/AP) change to a server-managed value is no longer the
      * server's version; the retained server config re-applies on reconnect. */
     if (server_managed_changed(&manager->current, &updated)) {
@@ -658,6 +736,10 @@ esp_err_t config_manager_update_remote_json(
         parse_result = parse_optional_thresholds(
             document, &updated.thresholds);
     }
+    if (parse_result == ESP_OK || parse_result == ESP_ERR_NOT_FOUND) {
+        parse_result = parse_optional_irrigation(
+            document, &updated.irrigation);
+    }
     if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
         xSemaphoreGive(manager_mutex(manager));
         return parse_result;
@@ -686,7 +768,14 @@ esp_err_t config_manager_to_json(
             &config.thresholds, thresholds, sizeof(thresholds)) < 0) {
         return ESP_ERR_INVALID_SIZE;
     }
-    /* Keep this document below the 512-byte BLE attribute read limit. */
+    char irrigation[48];
+    const int irrigation_length = irrigation_config_to_json(
+        &config.irrigation, irrigation, sizeof(irrigation));
+    if (irrigation_length < 0 || (size_t)irrigation_length >= sizeof(irrigation)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    /* Keep this document below the 512-byte BLE attribute read limit
+     * (worst case 495 bytes: 32-char device_id, every limit set). */
     int length = snprintf(
         output,
         output_size,
@@ -698,7 +787,8 @@ esp_err_t config_manager_to_json(
         "\"power_mode\":\"%s\","
         "\"wifi_configured\":%s,\"mqtt_configured\":%s,"
         "\"ap_password_configured\":%s,"
-        "\"config_version\":%" PRIu32 ",\"thresholds\":%s}",
+        "\"config_version\":%" PRIu32 ",\"thresholds\":%s,"
+        "\"irrigation\":%s}",
         config.device_id,
         config.telemetry_interval_s,
         config.soil_dry_raw,
@@ -718,7 +808,8 @@ esp_err_t config_manager_to_json(
         config.mqtt_uri[0] != '\0' ? "true" : "false",
         strlen(config.ap_password) >= 8 ? "true" : "false",
         config.config_version,
-        thresholds);
+        thresholds,
+        irrigation);
     if (length < 0 || (size_t)length >= output_size) {
         output[0] = '\0';
         return ESP_ERR_INVALID_SIZE;

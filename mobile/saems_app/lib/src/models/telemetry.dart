@@ -48,6 +48,9 @@ class Telemetry {
     this.lightLux,
     this.batteryPct,
     this.pumpState,
+    this.pumpReason,
+    this.batterySource,
+    this.batteryState,
     this.configVersion,
     this.alarmMask = 0,
   });
@@ -66,6 +69,15 @@ class Telemetry {
   final double? lightLux;
   final double? batteryPct;
   final String? pumpState;
+
+  /// Last pump transition: auto, manual, safety_off, low_battery.
+  final String? pumpReason;
+
+  /// none, adc or simulated.
+  final String? batterySource;
+
+  /// unknown, normal, low or critical.
+  final String? batteryState;
 
   /// Server configuration version applied on the device (0 = local config).
   final int? configVersion;
@@ -106,6 +118,9 @@ class Telemetry {
       ),
       batteryPct: _percentage(json['battery_pct']),
       pumpState: _string(json['pump_state']),
+      pumpReason: _string(json['pump_reason']),
+      batterySource: _string(json['battery_source']),
+      batteryState: _string(json['battery_state']),
       configVersion: _integer(json['config_version']),
       alarmMask: _integer(json['alarm_mask']) ?? 0,
     );
@@ -126,6 +141,9 @@ class Telemetry {
     'light_lux': lightLux,
     'battery_pct': batteryPct,
     'pump_state': pumpState,
+    'pump_reason': pumpReason,
+    'battery_source': batterySource,
+    'battery_state': batteryState,
     'config_version': configVersion,
     'alarm_mask': alarmMask,
   };

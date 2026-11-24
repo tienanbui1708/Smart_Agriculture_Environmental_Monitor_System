@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "irrigation.h"
 #include "threshold_monitor.h"
 
 #define SAEMS_DEVICE_ID_MAX_LEN 32
@@ -40,6 +41,8 @@ typedef struct {
     saems_power_mode_t power_mode;
     /* Alarm limits; see threshold_monitor.h for the array order. */
     threshold_limits_t thresholds;
+    /* Automatic watering; see irrigation.h for the "irrigation" array. */
+    irrigation_config_t irrigation;
     /* Version of the server-managed configuration last applied. 0 means
      * the device runs local (BLE/AP) settings not confirmed by the server. */
     uint32_t config_version;
@@ -61,8 +64,8 @@ esp_err_t config_manager_update_json(
     size_t json_length);
 /*
  * Apply a server-managed configuration received over MQTT. Only
- * config_version, telemetry_interval_s, power_mode and thresholds are
- * accepted; credentials, network and calibration keys are rejected with
+ * config_version, telemetry_interval_s, power_mode, thresholds and
+ * irrigation are accepted; credentials, network and calibration keys are rejected with
  * ESP_ERR_NOT_ALLOWED. A document whose config_version equals the stored
  * version is acknowledged without rewriting NVS (retained redelivery).
  * *applied is set to true only when the stored configuration changed.

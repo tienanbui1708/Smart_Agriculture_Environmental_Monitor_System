@@ -25,6 +25,9 @@ message_id_hi | message_id_lo | frame_index | frame_total | UTF-8 bytes...
 - Index starts at zero and must be smaller than `frame_total`.
 - An incomplete message expires after five seconds.
 - Commands reuse the JSON body used by the server pump endpoint.
+  A second command, `{"command":"battery_sim","pct":15}`, sets the simulated
+  battery level on firmware built with `SAEMS_BATTERY_SOURCE_SIMULATED`
+  (others answer an error). On AP it is posted to `/v1/commands/pump` too.
 
 ## Wi-Fi AP REST
 
@@ -50,6 +53,12 @@ restart rule: it is re-read and applied at the next sampling boundary. Battery
 mode keeps a short awake maintenance window for BLE/AP and sync, then enters
 timer Deep Sleep. An active BLE connection postpones Deep Sleep so the app can
 finish configuration; disconnect after saving Battery mode.
+
+Thresholds and automatic watering are runtime values like `power_mode`:
+`thresholds` is a 9-number array (`null` = off) and `irrigation` is
+`[enabled 0/1, start_below_pct 1..95, max_runtime_s 1..3600, min_rest_s 0..86400]`.
+Both stay compact so `GET /v1/config` and the BLE config read fit the 512-byte
+ATT limit (worst case 495 bytes). See `docs/pump-battery.md`.
 
 Soil calibration: config exposes `soil_calibrated` and build-time
 `soil_raw_readout_enabled`. To confirm measured calibration, send

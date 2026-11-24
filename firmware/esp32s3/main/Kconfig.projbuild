@@ -152,4 +152,91 @@ config SAEMS_SOIL_WET_RAW
     default 1200
     depends on SAEMS_SOIL_SENSOR_ENABLED
 
+config SAEMS_PUMP_SIMULATED
+    bool "Pump is simulated (no pump or pump supply attached)"
+    default y
+    help
+        Automatic watering and pump commands still switch relay channel 1
+        and report pump_state/pump_reason, but the log marks every run as
+        simulated. Disable once a real pump and its supply are wired.
+
+choice SAEMS_BATTERY_SOURCE
+    prompt "Battery level source"
+    default SAEMS_BATTERY_SOURCE_NONE
+    help
+        none: USB powered, battery_pct is null.
+        adc: 1S LiPo through a resistor divider on an ADC1 pin.
+        simulated: demo level that drains each sample; set it with the
+        {"command":"battery_sim","pct":N} command over BLE/AP/MQTT.
+
+config SAEMS_BATTERY_SOURCE_NONE
+    bool "None (USB powered)"
+
+config SAEMS_BATTERY_SOURCE_ADC
+    bool "ADC with resistor divider"
+
+config SAEMS_BATTERY_SOURCE_SIMULATED
+    bool "Simulated"
+
+endchoice
+
+config SAEMS_BATTERY_ADC_GPIO
+    int "Battery divider ADC GPIO (ADC1 only)"
+    range 1 10
+    default 6
+    depends on SAEMS_BATTERY_SOURCE_ADC
+    help
+        GPIO6 is ADC1_CH5 on ESP32-S3. ADC2 cannot be used while Wi-Fi runs.
+
+config SAEMS_BATTERY_DIVIDER_X100
+    int "Divider ratio x100 (battery voltage / pin voltage)"
+    range 100 1000
+    default 200
+    depends on SAEMS_BATTERY_SOURCE_ADC
+    help
+        200 for two equal resistors (e.g. 100k/100k), which keeps 4.2 V
+        at 2.1 V on the pin, inside the 12 dB attenuation range.
+
+config SAEMS_BATTERY_SIM_START_PCT
+    int "Simulated battery level after power-on (%)"
+    range 0 100
+    default 80
+    depends on SAEMS_BATTERY_SOURCE_SIMULATED
+
+config SAEMS_BATTERY_SIM_DRAIN_X10
+    int "Simulated drain per sample (tenths of a percent)"
+    range 0 100
+    default 5
+    depends on SAEMS_BATTERY_SOURCE_SIMULATED
+
+config SAEMS_BATTERY_LOW_PCT
+    int "Low battery level (%)"
+    range 5 60
+    default 20
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+    help
+        Below this level the device switches to Battery (Deep Sleep) mode
+        and samples at least every SAEMS_BATTERY_LOW_INTERVAL_SECONDS.
+
+config SAEMS_BATTERY_CRITICAL_PCT
+    int "Critical battery level (%)"
+    range 1 30
+    default 5
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+    help
+        Below this level the pump is stopped and blocked, and the device
+        sleeps for SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS between samples.
+
+config SAEMS_BATTERY_LOW_INTERVAL_SECONDS
+    int "Minimum sample interval on low battery (s)"
+    range 10 3600
+    default 600
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+
+config SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS
+    int "Sample interval on critical battery (s)"
+    range 60 86400
+    default 3600
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+
 endmenu

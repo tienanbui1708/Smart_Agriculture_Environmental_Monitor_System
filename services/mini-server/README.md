@@ -127,9 +127,18 @@ nghĩa là server không quản lý giá trị đó):
     "soil_moisture_pct": {"min": 35, "max": null},
     "light_lux": {"min": null, "max": null},
     "battery_pct": {"min": 20}
+  },
+  "auto_watering": {
+    "enabled": true,
+    "soil_moisture_threshold_pct": 30,
+    "pump_max_runtime_sec": 30,
+    "pump_min_rest_sec": 1800
   }
 }
 ```
+
+PUT thay **toàn bộ** cấu hình: phần nào bỏ trống hoặc `null` thì server thôi quản
+lý phần đó. App luôn gửi đủ các phần đang quản lý.
 
 - Server tăng `version`, publish retained lên `saems/{id}/config` dạng gọn
   `{"config_version":3,"telemetry_interval_s":300,"thresholds":[10.0,35.0,...]}`.
@@ -138,7 +147,8 @@ nghĩa là server không quản lý giá trị đó):
   telemetry. `GET .../configuration` trả `sync_state`: `applied`, `pending`,
   `unknown` (chưa có telemetry mới) hoặc `not_configured`.
 - Qua MQTT, firmware chỉ nhận `config_version`, `telemetry_interval_s`,
-  `power_mode`, `thresholds`; Wi-Fi/MQTT/AP/hiệu chuẩn đất chỉ đổi qua BLE/AP.
+  `power_mode`, `thresholds`, `irrigation` (tưới tự động dạng mảng
+  `[bật, ngưỡng %, bơm tối đa s, nghỉ s]`, xem `docs/pump-battery.md`); Wi-Fi/MQTT/AP/hiệu chuẩn đất chỉ đổi qua BLE/AP.
 - Đổi ngưỡng/chu kỳ qua BLE/AP sẽ đặt `config_version = 0` trên thiết bị; khi
   thiết bị nối lại server, cấu hình retained của server được áp dụng lại.
 - ACL Mosquitto phải có `topic read saems/<id>/config` cho thiết bị và

@@ -1,3 +1,5 @@
+import 'watering.dart';
+
 /// Alarm limits shared by server, firmware and app.
 ///
 /// The device array order and the telemetry `alarm_mask` bits follow
@@ -177,10 +179,13 @@ class ServerConfiguration {
     this.telemetryIntervalSeconds,
     this.powerMode,
     this.offlineAlertAfterSeconds,
+    this.autoWatering,
   });
 
   final String deviceId;
   final int version;
+  /// null: the server does not manage automatic watering.
+  final AutoWatering? autoWatering;
   final int? appliedVersion;
   final String syncState;
   final int? telemetryIntervalSeconds;
@@ -203,14 +208,17 @@ class ServerConfiguration {
         configuration['offline_alert_after_s'],
       ),
       thresholds: ThresholdConfig.fromServerJson(configuration['thresholds']),
+      autoWatering: AutoWatering.fromServerJson(configuration['auto_watering']),
     );
   }
 
+  /// PUT replaces the whole configuration, so every managed part is sent.
   Map<String, dynamic> toRequestJson() => {
     'telemetry_interval_s': telemetryIntervalSeconds,
     'power_mode': powerMode,
     'offline_alert_after_s': offlineAlertAfterSeconds,
     'thresholds': thresholds.toServerJson(),
+    'auto_watering': autoWatering?.toServerJson(),
   };
 
   String get syncLabel => switch (syncState) {
