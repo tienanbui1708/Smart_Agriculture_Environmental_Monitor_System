@@ -27,7 +27,7 @@ Ký hiệu: `[x]` xong · `[~]` đang làm · `[ ]` chưa làm · 🔧 cần ph�
 | A | Ngưỡng, cấu hình từ xa, cảnh báo Telegram | Output Server "Cảnh báo", Input Device "cập nhật ngưỡng" | `[x]` code · 🔧 chờ nghiệm thu board/Pi |
 | B | Kịch bản máy bơm và pin (thật + mô phỏng) | Battery Level, Relay bơm | `[x]` code · 🔧 chờ board |
 | C | Lưu offline bằng ring buffer trên flash | Offline Resilience "không mất dữ liệu" | `[x]` code · 🔧 chờ board |
-| D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[ ]` |
+| D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[x]` code · 🔧 chờ board |
 | E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[ ]` |
 | F | Chất lượng code, test, bằng chứng nghiệm thu | MISRA/best practice, Giai đoạn 4, năng lượng | `[ ]` |
 | G | Dọn repo và tài liệu | Quản lý source | `[ ]` |
@@ -175,9 +175,20 @@ Chi tiết thiết kế và nghiệm thu: [`offline-storage.md`](offline-storage
 
 ## GĐ D — LED trạng thái
 
-- [ ] Driver WS2812 GPIO48 (`led_strip`), Kconfig chọn GPIO/tắt LED.
-- [ ] Xanh lá online · vàng nhấp nháy mất server · xanh dương BLE/AP · đỏ lỗi cảm biến ·
-  tím đang gửi bù · tắt khi ngủ.
+- [x] Component `status_led`: driver WS2812 qua `espressif/led_strip` 3.0.3 (RMT), Kconfig
+  `SAEMS_STATUS_LED_ENABLED` / `_GPIO` (48) / `_BRIGHTNESS` (16).
+- [x] Ưu tiên màu (C thuần, host test 30 checks): tắt khi sắp ngủ · trắng khởi động · đỏ lỗi cảm
+  biến · tím đang gửi bù · xanh dương BLE/AP · xanh lá online · vàng nhấp nháy mất server.
+  Bảng màu trong `firmware/esp32s3/README.md`.
+- [x] Nhấp nháy/cập nhật 0,5 s chỉ ở Direct; Light/Battery chỉ đổi màu theo sự kiện để CPU ngủ;
+  tắt LED trước Deep Sleep, sáng lại nếu Deep Sleep bị hoãn vì BLE.
+- [x] Firmware build đạt, không warning (binary 0x14b440, 57 % trống).
+
+### Nghiệm thu GĐ D 🔧
+
+Cắm nguồn: trắng → xanh lá. Tắt broker (`sudo systemctl stop saems-mqtt` trên Pi) → vàng nhấp
+nháy; bật lại → tím trong lúc gửi bù → xanh lá. Kết nối app qua BLE → xanh dương. Rút dây
+SDA của DHT20 → đỏ. Chuyển Battery mode → LED tắt khi ngủ.
 
 ## GĐ E — Bảo mật và đăng nhập
 
@@ -215,3 +226,4 @@ Chi tiết thiết kế và nghiệm thu: [`offline-storage.md`](offline-storage
 | 2026-11-24 | Cài app GĐ A lên Samsung A24 và Pixel 6 (sửa lỗi Kotlin incremental do khác ổ đĩa). Push nhánh lên GitHub. Board đã tháo, chờ lắp lại. |
 | 2026-11-24 | GĐ B xong phần code (firmware, server, app, tài liệu); server GĐ B triển khai lên Pi. Chờ board để nghiệm thu GĐ A + B. |
 | 2026-11-24 | GĐ C xong phần code: vòng ghi flash 6 MB, gửi bù theo lô, server nhận lô; server triển khai lên Pi. |
+| 2026-11-24 | GĐ D xong phần code: LED trạng thái WS2812 GPIO48. |

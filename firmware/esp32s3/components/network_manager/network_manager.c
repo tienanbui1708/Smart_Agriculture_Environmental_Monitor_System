@@ -186,6 +186,15 @@ bool network_manager_is_ap_active(network_manager_t *manager)
             NETWORK_MANAGER_AP_STARTED_BIT) != 0;
 }
 
+int network_manager_ap_client_count(network_manager_t *manager)
+{
+    if (!network_manager_is_ap_active(manager)) {
+        return 0;
+    }
+    wifi_sta_list_t stations;
+    return esp_wifi_ap_get_sta_list(&stations) == ESP_OK ? stations.num : 0;
+}
+
 EventBits_t network_manager_wait_for_connection(
     network_manager_t *manager, TickType_t timeout)
 {

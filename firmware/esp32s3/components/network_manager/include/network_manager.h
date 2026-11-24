@@ -22,5 +22,7 @@ esp_err_t network_manager_init(
     network_manager_t *manager, const saems_config_t *config);
 bool network_manager_is_connected(network_manager_t *manager);
 bool network_manager_is_ap_active(network_manager_t *manager);
+/* Stations currently associated with the direct-connection AP. */
+int network_manager_ap_client_count(network_manager_t *manager);
 EventBits_t network_manager_wait_for_connection(
     network_manager_t *manager, TickType_t timeout);

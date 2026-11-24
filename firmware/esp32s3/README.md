@@ -21,12 +21,32 @@ cùng một binary. Không build project `hello_world` ở thư mục gốc repo
 | Relay CH1 | IN1 | GPIO10 | Điều khiển bơm |
 | Relay CH2 | IN2 | GPIO11 | Kênh dự phòng |
 | Relay | DC+/DC- | 5Vin/GND chung | Nguồn cuộn relay |
+| LED RGB WS2812 (onboard) | DIN | GPIO48 | LED trạng thái (`SAEMS_STATUS_LED_GPIO`, board v1.1 dùng GPIO38) |
 | Pin LiPo 1S (tùy chọn) | + qua cầu chia 100k/100k | GPIO6 | ADC1_CH5, đo mức pin (`SAEMS_BATTERY_SOURCE_ADC`) |
 
 BH1750 là cảm biến I²C, không phải ADC. Không đưa mức 5 V vào GPIO, SDA hoặc SCL
 của ESP32-S3. Khi chưa nghiệm thu relay, phải ngắt tải bơm trước khi flash/reset.
 Nối dây máy bơm, cầu chia áp pin và kịch bản tưới tự động/pin yếu: xem
 [`docs/pump-battery.md`](../../docs/pump-battery.md).
+
+### LED trạng thái
+
+LED RGB onboard (WS2812, độ sáng mặc định 16/255) cho biết trạng thái mà không cần
+mở app hay log. Thứ tự ưu tiên từ trên xuống:
+
+| Màu | Ý nghĩa |
+|---|---|
+| Tắt | Sắp vào Deep Sleep (WS2812 giữ màu nếu không tắt), hoặc LED bị tắt trong menuconfig |
+| Trắng | Đang khởi động, chưa lấy mẫu lần đầu |
+| Đỏ | Cảm biến lỗi (DHT20/BH1750 không trả lời, hoặc soil báo lỗi) |
+| Tím | Đã nối server và đang gửi bù dữ liệu offline |
+| Xanh dương | Điện thoại đang kết nối BLE hoặc Wi-Fi AP |
+| Xanh lá | Đã nối server MQTT, không còn dữ liệu chờ |
+| Vàng nhấp nháy | Mất Wi-Fi hoặc server; dữ liệu vẫn lưu offline |
+
+Nhấp nháy và cập nhật mỗi 0,5 s chỉ chạy ở chế độ Direct. Ở Light Sleep/Battery,
+LED chỉ đổi màu khi có sự kiện và vàng hiện sáng liên tục, để CPU được ngủ. Khi đo
+dòng ngủ, tắt `SAEMS_STATUS_LED_ENABLED`: WS2812 vẫn tốn khoảng 1 mA kể cả khi tối.
 
 ## Kiến trúc firmware
 

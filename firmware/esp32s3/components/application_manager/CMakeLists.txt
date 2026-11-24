@@ -16,6 +16,7 @@ idf_component_register(
         power_manager
         relay
         sensor_manager
+        status_led
         storage_manager
         sync_manager
         threshold_monitor

@@ -239,4 +239,26 @@ config SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS
     default 3600
     depends on !SAEMS_BATTERY_SOURCE_NONE
 
+config SAEMS_STATUS_LED_ENABLED
+    bool "Show device status on the onboard WS2812 RGB LED"
+    default y
+    help
+        Green online, blinking yellow server unreachable, blue phone
+        connected over BLE/AP, red sensor error, purple sending offline
+        backlog, white booting, off before Deep Sleep.
+
+config SAEMS_STATUS_LED_GPIO
+    int "WS2812 data GPIO"
+    range 0 48
+    default 48
+    depends on SAEMS_STATUS_LED_ENABLED
+    help
+        ESP32-S3-DevKitC-1 v1.0 uses GPIO48; v1.1 boards use GPIO38.
+
+config SAEMS_STATUS_LED_BRIGHTNESS
+    int "Status LED brightness (1-255)"
+    range 1 255
+    default 16
+    depends on SAEMS_STATUS_LED_ENABLED
+
 endmenu

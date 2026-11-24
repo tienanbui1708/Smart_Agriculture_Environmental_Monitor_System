@@ -32,6 +32,7 @@
 #include "power_manager.h"
 #include "relay.h"
 #include "sensor_manager.h"
+#include "status_led.h"
 #include "storage_manager.h"
 #include "sync_manager.h"
 #include "threshold_monitor.h"
@@ -106,6 +107,11 @@ typedef struct {
     SemaphoreHandle_t latest_mutex;
     battery_monitor_t battery;
     battery_reading_t battery_reading;
+    status_led_t status_led;
+    /* Inputs for the status LED, written by the sampling task. */
+    volatile bool first_sample_done;
+    volatile bool sensor_error;
+    volatile bool going_to_sleep;
     /* Pump state and automatic watering memory; guarded by pump_mutex. */
     irrigation_state_t irrigation;
     saems_config_t config;
@@ -188,6 +194,10 @@ static esp_err_t refresh_runtime_configuration(void)
         TAG,
         "apply runtime power mode");
     application.config = latest;
+    status_led_set_periodic(
+        &application.status_led,
+        !power_manager_is_deep_sleep(&application.power_manager) &&
+            application.power_manager.mode != POWER_MANAGER_LIGHT_SLEEP);
     if (previous != latest.power_mode) {
         ESP_LOGI(TAG,
                  "Power mode applied at sample boundary: %s -> %s",
@@ -687,6 +697,31 @@ static uint16_t evaluate_alarms(const sensor_snapshot_t *snapshot)
     return mask;
 }
 
+static void provide_led_inputs(void *context, status_led_inputs_t *inputs)
+{
+    (void)context;
+    inputs->sleeping = application.going_to_sleep;
+    inputs->booting = !application.first_sample_done;
+    inputs->sensor_error = application.sensor_error;
+    inputs->server_connected =
+        mqtt_manager_is_connected(&application.mqtt_manager);
+    /* One record is always briefly pending after each sample; only a real
+     * backlog counts as "sending offline data". */
+    inputs->backlog_pending =
+        storage_manager_pending_count(&application.storage_manager) > 1U;
+    inputs->direct_client =
+        ble_manager_is_connected(&application.ble_manager) ||
+        network_manager_ap_client_count(&application.network_manager) > 0;
+}
+
+static bool snapshot_has_sensor_error(const sensor_snapshot_t *snapshot)
+{
+    /* Unavailable soil means "not enabled", not a fault. */
+    return snapshot->dht20_health != SENSOR_HEALTH_OK ||
+           snapshot->bh1750_health != SENSOR_HEALTH_OK ||
+           snapshot->soil_health == SENSOR_HEALTH_ERROR;
+}
+
 static void mqtt_published(int message_id, void *context)
 {
     (void)context;
@@ -697,6 +732,7 @@ static void mqtt_connection(bool connected, void *context)
 {
     (void)context;
     sync_manager_on_connection_changed(&application.sync_manager, connected);
+    status_led_refresh(&application.status_led);
 }
 
 static direct_connection_callbacks_t direct_callbacks(void)
@@ -809,6 +845,9 @@ static void sampling_task(void *arg)
         application.battery_reading = battery;
 
         transition(APP_STATE_PROCESS_DATA);
+        application.sensor_error = snapshot_has_sensor_error(&snapshot);
+        application.first_sample_done = true;
+        status_led_refresh(&application.status_led);
         application.alarm_mask = evaluate_alarms(&snapshot);
         run_irrigation(&snapshot);
         bool pump_on = false;
@@ -875,6 +914,7 @@ static void sampling_task(void *arg)
         start_mqtt_when_ready();
         sync_manager_kick(&application.sync_manager);
         wait_for_deep_sleep_sync_window();
+        status_led_refresh(&application.status_led);
         ESP_LOGI(TAG,
                  "Sample captured: boot=%08" PRIx32 " seq=%" PRIu32
                  " pending=%u payload=%s",
@@ -898,6 +938,8 @@ static void sampling_task(void *arg)
                     &application.relay, RELAY_CHANNEL_2, false);
             }
             save_rtc_sequence_state();
+            application.going_to_sleep = true;
+            status_led_off(&application.status_led);
             uint32_t elapsed_seconds = (uint32_t)(
                 (xTaskGetTickCount() - cycle_started) / configTICK_RATE_HZ);
             idle_seconds = elapsed_seconds < interval_seconds
@@ -908,6 +950,11 @@ static void sampling_task(void *arg)
                                  idle_seconds,
                                  direct_active,
                                  sync_pending);
+        /* Deep Sleep can be postponed (BLE connected); light the LED again. */
+        if (application.going_to_sleep) {
+            application.going_to_sleep = false;
+            status_led_refresh(&application.status_led);
+        }
     }
 }
 
@@ -1094,6 +1141,15 @@ esp_err_t application_manager_start(void)
             TAG,
             "BLE manager");
     }
+
+    result = status_led_init(&application.status_led, provide_led_inputs, NULL);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Status LED unavailable: %s", esp_err_to_name(result));
+    }
+    status_led_set_periodic(
+        &application.status_led,
+        !power_manager_is_deep_sleep(&application.power_manager) &&
+            application.power_manager.mode != POWER_MANAGER_LIGHT_SLEEP);
 
     ESP_RETURN_ON_ERROR(
         initialize_sequence_state(wakeup_causes),
