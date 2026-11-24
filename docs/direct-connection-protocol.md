@@ -33,6 +33,14 @@ message_id_hi | message_id_lo | frame_index | frame_total | UTF-8 bytes...
 
 Default base URL: `http://192.168.4.1`.
 
+Security (see `docs/security.md`): requests are served only when they arrive on
+the AP address (others get 403), and every endpoint except `/v1/health` needs
+`Authorization: Bearer <device token>` (default: the AP Wi-Fi password, or
+`ap_api_token` when set). BLE telemetry/config/command characteristics need an
+authenticated passkey pairing; `device_info` reports `"pairing":"passkey"`.
+Config writes accept write-only `ap_api_token` (8-64 chars) and `ble_passkey`
+(6 digits); neither is ever returned nor accepted over MQTT.
+
 | Method | Path |
 | --- | --- |
 | GET | `/v1/health` |

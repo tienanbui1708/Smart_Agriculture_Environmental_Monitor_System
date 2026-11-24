@@ -13,7 +13,15 @@ $saemsApAddress = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyCont
 if (-not $saemsApAddress) {
     throw 'Laptop is not connected to the ESP32 AP. Join SAEMS-farm-01 first, then retry.'
 }
-$saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -TimeoutSec 10
+
+# The device REST API needs its token (default: the AP Wi-Fi password).
+$saemsToken = $env:SAEMS_DEVICE_TOKEN
+if (-not $saemsToken) {
+    $saemsSecure = Read-Host -AsSecureString 'Device token (AP password unless changed)'
+    $saemsToken = [System.Net.NetworkCredential]::new('', $saemsSecure).Password
+}
+$saemsHeaders = @{ Authorization = "Bearer $saemsToken" }
+$saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -Headers $saemsHeaders -TimeoutSec 10
 if ($saemsConfig.device_id -ne $DeviceId) { throw 'Unexpected device; refusing configuration' }
 if ($Action -eq 'Calibrate') {
     if (!$PSBoundParameters.ContainsKey('DryRaw') -or !$PSBoundParameters.ContainsKey('WetRaw')) {
@@ -31,8 +39,8 @@ if ($Action -eq 'Calibrate') {
         soil_dry_raw = $DryRaw
         soil_wet_raw = $WetRaw
     } | ConvertTo-Json -Compress
-    Invoke-RestMethod "$saemsBase/v1/config" -Method Put -ContentType 'application/json' -Body $saemsBody -TimeoutSec 10 | Out-Null
-    $saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -TimeoutSec 10
+    Invoke-RestMethod "$saemsBase/v1/config" -Headers $saemsHeaders -Method Put -ContentType 'application/json' -Body $saemsBody -TimeoutSec 10 | Out-Null
+    $saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -Headers $saemsHeaders -TimeoutSec 10
     if (!$saemsConfig.soil_calibrated -or !$saemsConfig.soil_enabled -or
         $saemsConfig.soil_dry_raw -ne $DryRaw -or $saemsConfig.soil_wet_raw -ne $WetRaw) {
         throw 'Calibration readback did not match; do not accept percentage output'
@@ -40,5 +48,5 @@ if ($Action -eq 'Calibrate') {
     Write-Output 'Calibration persisted and verified; press ESP32 EN/reset to apply sensor settings (loads disconnected). No reflash needed.'
 }
 $saemsConfig | Select-Object device_id,soil_enabled,soil_calibrated,soil_raw_readout_enabled,soil_dry_raw,soil_wet_raw
-Invoke-RestMethod "$saemsBase/v1/telemetry/latest" -TimeoutSec 10 |
+Invoke-RestMethod "$saemsBase/v1/telemetry/latest" -Headers $saemsHeaders -TimeoutSec 10 |
     Select-Object boot_id,seq,soil_raw,soil_digital,soil_moisture_pct,sensor_status

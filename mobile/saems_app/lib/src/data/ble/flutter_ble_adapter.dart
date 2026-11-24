@@ -133,6 +133,10 @@ class FlutterBleAdapter implements BleAdapter, DirectConfigTransport {
         }
         _frames.add(bytes);
       }, onError: _reportError);
+      // Firmware with passkey pairing protects telemetry: bond first (Android
+      // shows the passkey prompt) so the subscription is accepted.
+      if (Platform.isAndroid) await device.createBond();
+      _ensureActive();
       await _telemetry!.setNotifyValue(true);
       _ensureActive();
       await _connection?.cancel();

@@ -36,6 +36,17 @@ config SAEMS_BLE_ENABLED
         Exposes the SAEMS GATT service used by the mobile application for
         telemetry notifications, configuration and pump commands.
 
+config SAEMS_BLE_PASSKEY_PAIRING
+    bool "Require BLE passkey pairing (MITM protected)"
+    default y
+    depends on SAEMS_BLE_ENABLED
+    help
+        Telemetry, config and command characteristics need an authenticated
+        LE Secure Connections link. Each device generates a 6-digit passkey
+        once (NVS), prints it on the serial log at boot, and the phone asks
+        the user to type it. Disable only to fall back to Just Works.
+        Phones bonded with older firmware must pair again.
+
 config SAEMS_AP_ENABLED
     bool "Enable Wi-Fi Access Point and local REST API"
     default n

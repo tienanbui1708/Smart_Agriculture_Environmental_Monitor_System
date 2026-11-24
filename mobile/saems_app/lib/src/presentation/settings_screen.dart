@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/auth_api.dart';
 import '../models/data_source.dart';
 import '../data/settings_store.dart';
 import '../state/app_state.dart';
 import 'diagnostics_screen.dart';
+import 'login_screen.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -18,7 +20,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _apiController;
   late final TextEditingController _deviceController;
   final _tokenController = TextEditingController();
+  final _deviceTokenController = TextEditingController();
   bool _tokenChanged = false;
+  bool _deviceTokenChanged = false;
   DataSourceType? _source;
   bool _initialized = false;
   bool _dirty = false;
@@ -36,6 +40,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _apiController.dispose();
     _deviceController.dispose();
     _tokenController.dispose();
+    _deviceTokenController.dispose();
     super.dispose();
   }
 
@@ -49,12 +54,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           source: _source ?? ref.read(currentSettingsProvider).source,
         );
     if (_tokenChanged) {
+      // A raw API token replaces any login session.
+      await ref.read(settingsStoreProvider).clearSession();
       await ref
           .read(settingsStoreProvider)
           .saveToken(_tokenController.text.trim());
       ref.invalidate(apiTokenProvider);
+      ref.invalidate(sessionUserProvider);
       _tokenController.clear();
       _tokenChanged = false;
+    }
+    if (_deviceTokenChanged) {
+      await ref
+          .read(settingsStoreProvider)
+          .saveDeviceToken(_deviceTokenController.text);
+      ref.invalidate(deviceTokenProvider);
+      _deviceTokenController.clear();
+      _deviceTokenChanged = false;
     }
     _dirty = false;
     await ref.read(appSettingsProvider.notifier).save(settings);
@@ -65,6 +81,52 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Đã lưu cài đặt')));
     }
+  }
+
+  Future<void> _logout() async {
+    final settings = ref.read(currentSettingsProvider);
+    final token = await ref.read(settingsStoreProvider).readToken();
+    if (token != null && token.isNotEmpty) {
+      await AuthApi(settings.apiBaseUrl).logout(token);
+    }
+    await ref.read(settingsStoreProvider).clearSession();
+    ref.invalidate(apiTokenProvider);
+    ref.invalidate(sessionUserProvider);
+    ref.invalidate(telemetryProvider);
+    ref.read(diagnosticsProvider.notifier).add('Đã đăng xuất server');
+  }
+
+  Widget _accountCard() {
+    final user = ref.watch(sessionUserProvider).value;
+    final token = ref.watch(apiTokenProvider).value;
+    final hasToken = token != null && token.isNotEmpty;
+    final String title;
+    final String subtitle;
+    if (user != null && hasToken) {
+      title = 'Đã đăng nhập: $user';
+      subtitle = 'Phiên đăng nhập lưu trong secure storage.';
+    } else if (hasToken) {
+      title = 'Đang dùng API token';
+      subtitle = 'Có thể chuyển sang đăng nhập bằng tài khoản.';
+    } else {
+      title = 'Chưa đăng nhập server';
+      subtitle = 'Cần đăng nhập khi dùng nguồn dữ liệu Server.';
+    }
+    return Card(
+      child: ListTile(
+        leading: const Icon(Icons.account_circle_outlined),
+        title: Text(title),
+        subtitle: Text(subtitle),
+        trailing: hasToken
+            ? TextButton(onPressed: _logout, child: const Text('Đăng xuất'))
+            : TextButton(
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                ),
+                child: const Text('Đăng nhập'),
+              ),
+      ),
+    );
   }
 
   @override
@@ -119,6 +181,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   : null,
             ),
             const SizedBox(height: 16),
+            _accountCard(),
+            const SizedBox(height: 8),
             TextFormField(
               controller: _tokenController,
               obscureText: true,
@@ -129,8 +193,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 _dirty = true;
               },
               decoration: const InputDecoration(
-                labelText: 'API access token',
-                helperText: 'Để nguyên ô trống để giữ token đã lưu',
+                labelText: 'API access token (nâng cao)',
+                helperText:
+                    'Thay cho đăng nhập; để trống để giữ token đã lưu',
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _deviceTokenController,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              onChanged: (_) {
+                _deviceTokenChanged = true;
+                _dirty = true;
+              },
+              decoration: const InputDecoration(
+                labelText: 'Mã thiết bị (Wi-Fi AP)',
+                prefixIcon: Icon(Icons.key_outlined),
+                helperText:
+                    'Mặc định là mật khẩu Wi-Fi AP của ESP32; để trống để giữ',
               ),
             ),
             const SizedBox(height: 16),

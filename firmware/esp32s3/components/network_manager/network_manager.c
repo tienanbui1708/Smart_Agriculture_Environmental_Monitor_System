@@ -116,8 +116,14 @@ esp_err_t network_manager_init(
         memcpy(station_config.sta.password,
                config->wifi_password,
                station_password_length);
-        station_config.sta.threshold.authmode =
-            station_password_length == 0 ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+        /* Never join open or WEP networks; the threshold also stops a
+         * downgrade to a weaker access point with the same SSID. */
+        station_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        if (station_password_length < SAEMS_WIFI_PASSWORD_MIN_LEN) {
+            ESP_LOGE(TAG, "Wi-Fi \"%s\" has no WPA2 password; open networks are "
+                     "refused. Set an 8+ character password over BLE/AP.",
+                     config->wifi_ssid);
+        }
         ESP_RETURN_ON_ERROR(
             esp_wifi_set_config(WIFI_IF_STA, &station_config),
             TAG,

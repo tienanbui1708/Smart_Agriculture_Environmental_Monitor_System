@@ -28,7 +28,7 @@ Ký hiệu: `[x]` xong · `[~]` đang làm · `[ ]` chưa làm · 🔧 cần ph�
 | B | Kịch bản máy bơm và pin (thật + mô phỏng) | Battery Level, Relay bơm | `[x]` code · 🔧 chờ board |
 | C | Lưu offline bằng ring buffer trên flash | Offline Resilience "không mất dữ liệu" | `[x]` code · 🔧 chờ board |
 | D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[x]` code · 🔧 chờ board |
-| E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[ ]` |
+| E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[x]` code · 🔧 chờ board + đặt mật khẩu admin |
 | F | Chất lượng code, test, bằng chứng nghiệm thu | MISRA/best practice, Giai đoạn 4, năng lượng | `[ ]` |
 | G | Dọn repo và tài liệu | Quản lý source | `[ ]` |
 
@@ -192,11 +192,21 @@ SDA của DHT20 → đỏ. Chuyển Battery mode → LED tắt khi ngủ.
 
 ## GĐ E — Bảo mật và đăng nhập
 
-- [ ] Firmware từ chối Wi-Fi mở (tối thiểu WPA2).
-- [ ] REST cục bộ chỉ trên AP và yêu cầu token thiết bị.
-- [ ] BLE pairing bằng passkey (Kconfig) thay Just Works.
-- [ ] Server `POST /auth/login` (user/password trong `.env`, mật khẩu băm), cấp token có hạn.
-- [ ] App màn hình đăng nhập, lưu token trong FlutterSecureStorage, đăng xuất.
+Chi tiết và nghiệm thu: [`security.md`](security.md).
+
+- [x] Firmware từ chối Wi-Fi mở/WEP (`threshold = WPA2_PSK`, mật khẩu ≥ 8 ký tự khi lưu cấu hình).
+- [x] REST cục bộ chỉ trả lời request đến qua địa chỉ AP (khác → 403) và cần
+  `Authorization: Bearer <mã thiết bị>` (mặc định mật khẩu AP, đổi được bằng `ap_api_token`,
+  chỉ ghi, so sánh thời gian hằng). Script Windows gửi mã từ `SAEMS_DEVICE_TOKEN`.
+- [x] BLE pairing bằng passkey 6 số (LE SC + MITM, DisplayOnly) thay Just Works; passkey sinh
+  ngẫu nhiên một lần, lưu NVS, in log serial; telemetry/config/command cần link đã xác thực;
+  bond Just Works cũ được ghép lại. Kconfig `SAEMS_BLE_PASSKEY_PAIRING`.
+- [x] Server `POST /auth/login` (admin trong `.env`, PBKDF2-SHA256 310k vòng), token phiên ngẫu
+  nhiên lưu dạng SHA-256 có hạn (30 ngày), `/auth/logout`, `/auth/me`, khóa 5 phút sau 5 lần sai.
+  API token cũ vẫn hợp lệ. `python auth.py set-password` để đặt mật khẩu trên Pi. 38 test server.
+- [x] App: màn hình đăng nhập (hiện khi nguồn Server chưa có thông tin đăng nhập), đăng xuất,
+  nút "Đăng nhập lại" khi 401, ô mã thiết bị cho Wi-Fi AP; token lưu FlutterSecureStorage;
+  Android ghép đôi BLE trước khi bật notify. 38 test app.
 
 ## GĐ F — Chất lượng code và bằng chứng
 
@@ -227,3 +237,4 @@ SDA của DHT20 → đỏ. Chuyển Battery mode → LED tắt khi ngủ.
 | 2026-11-24 | GĐ B xong phần code (firmware, server, app, tài liệu); server GĐ B triển khai lên Pi. Chờ board để nghiệm thu GĐ A + B. |
 | 2026-11-24 | GĐ C xong phần code: vòng ghi flash 6 MB, gửi bù theo lô, server nhận lô; server triển khai lên Pi. |
 | 2026-11-24 | GĐ D xong phần code: LED trạng thái WS2812 GPIO48. |
+| 2026-11-24 | GĐ E xong phần code: Wi-Fi WPA2, AP token, BLE passkey, đăng nhập server + app; server triển khai lên Pi (chờ đặt mật khẩu admin). |

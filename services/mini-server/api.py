@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 
 import alert_engine
+import auth
 import device_config
 from mqtt_security import configure_mqtt_tls
 from notifier import notifier_from_env
@@ -36,6 +37,19 @@ API_ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "")
 API_PUBLIC_MODE = os.getenv("API_PUBLIC_MODE", "false").lower() in ("1", "true", "yes")
 if API_PUBLIC_MODE and len(API_ACCESS_TOKEN) < 32:
     raise RuntimeError("Public API requires an API_ACCESS_TOKEN of at least 32 characters")
+# User login (auth.py). Without a password hash only the API token works.
+ADMIN_USER = os.getenv("SAEMS_ADMIN_USER", "admin")
+ADMIN_PASSWORD_HASH = os.getenv("SAEMS_ADMIN_PASSWORD_HASH", "")
+SESSION_TTL_SECONDS = int(os.getenv("SAEMS_SESSION_TTL_HOURS", "720")) * 3600
+PUBLIC_PATHS = {"/health", "/auth/login"}
+sessions = auth.SessionStore(BASE_DIR / "data" / "auth.db", SESSION_TTL_SECONDS)
+login_throttle = auth.LoginThrottle()
+basic_cache = auth.CredentialCache()
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class PumpCommand(BaseModel):
@@ -54,45 +68,114 @@ class BatterySimCommand(BaseModel):
 
 notifier = notifier_from_env()
 
-app = FastAPI(title="SAEMS Mini Server API", version="0.4.0")
+app = FastAPI(title="SAEMS Mini Server API", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[value for value in os.getenv("CORS_ORIGINS", "").split(",") if value],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
 
-@app.middleware("http")
-async def authenticate(request: Request, call_next):
-    """Bearer for mobile/API clients, HTTP Basic for the same-origin dashboard."""
-    if request.url.path == "/health" or request.method == "OPTIONS" or not API_ACCESS_TOKEN:
-        return await call_next(request)
-    authorization = request.headers.get("authorization", "")
+def auth_enabled() -> bool:
+    return bool(API_ACCESS_TOKEN or ADMIN_PASSWORD_HASH)
+
+
+def check_admin_password(username: str, password: str) -> bool:
+    if not ADMIN_PASSWORD_HASH or not secrets.compare_digest(
+            username.encode(), ADMIN_USER.encode()):
+        return False
+    return auth.verify_password(password, ADMIN_PASSWORD_HASH)
+
+
+def identify(authorization: str) -> Optional[tuple[str, str]]:
+    """Return (username, method) for valid credentials, else None.
+
+    Bearer: the API access token (scripts, older app builds) or a session
+    token from /auth/login. Basic (dashboard): "saems" + API token, or the
+    admin user + password.
+    """
     scheme, _, value = authorization.partition(" ")
-    candidate = ""
-    if scheme.lower() == "bearer":
-        candidate = value
-    elif scheme.lower() == "basic":
+    scheme = scheme.lower()
+    if scheme == "bearer" and value:
+        if API_ACCESS_TOKEN and secrets.compare_digest(
+                value.encode(), API_ACCESS_TOKEN.encode()):
+            return "api-token", "api_token"
+        username = sessions.lookup(value)
+        return (username, "session") if username else None
+    if scheme == "basic":
         try:
             username, separator, password = base64.b64decode(
                 value, validate=True
             ).decode("utf-8").partition(":")
-            if username == "saems" and separator:
-                candidate = password
         except (ValueError, UnicodeError):
-            pass
-    if not candidate or not secrets.compare_digest(candidate.encode(), API_ACCESS_TOKEN.encode()):
+            return None
+        if not separator:
+            return None
+        if (username == "saems" and API_ACCESS_TOKEN and
+                secrets.compare_digest(password.encode(), API_ACCESS_TOKEN.encode())):
+            return "api-token", "basic"
+        if basic_cache.contains(username, password):
+            return username, "basic"
+        if check_admin_password(username, password):
+            basic_cache.add(username, password)
+            return username, "basic"
+    return None
+
+
+@app.middleware("http")
+async def authenticate(request: Request, call_next):
+    if (request.url.path in PUBLIC_PATHS or request.method == "OPTIONS" or
+            not auth_enabled()):
+        return await call_next(request)
+    identity = identify(request.headers.get("authorization", ""))
+    if identity is None:
         return JSONResponse(
             status_code=401,
             content={"detail": "Authentication required"},
             headers={"WWW-Authenticate": 'Basic realm="SAEMS", charset="UTF-8"'},
         )
+    request.state.username, request.state.auth_method = identity
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@app.post("/auth/login")
+def login(credentials: LoginRequest, request: Request):
+    """Exchange the admin user/password for a session bearer token."""
+    if not ADMIN_PASSWORD_HASH:
+        raise HTTPException(503, "Login is not configured on this server "
+                                 "(run: python auth.py set-password)")
+    client = request.client.host if request.client else "unknown"
+    wait = login_throttle.retry_after(client)
+    if wait:
+        raise HTTPException(429, "Too many failed logins; try again later",
+                            headers={"Retry-After": str(wait)})
+    if not check_admin_password(credentials.username, credentials.password):
+        login_throttle.failure(client)
+        raise HTTPException(401, "Wrong username or password")
+    login_throttle.success(client)
+    token, expires_at = sessions.create(credentials.username)
+    return {"access_token": token, "token_type": "bearer",
+            "expires_at": expires_at, "username": credentials.username}
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    """Revoke the session token used for this request (no-op for API token)."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    revoked = scheme.lower() == "bearer" and sessions.revoke(value)
+    return {"status": "logged_out" if revoked else "no_session"}
+
+
+@app.get("/auth/me")
+def whoami(request: Request):
+    return {"username": getattr(request.state, "username", None),
+            "method": getattr(request.state, "auth_method", "none"),
+            "login_configured": bool(ADMIN_PASSWORD_HASH)}
 
 
 def latest_rows(connection):

@@ -6,6 +6,8 @@
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "lwip/sockets.h"
 
 #define AP_RESPONSE_SIZE 1024
 #define AP_HISTORY_MAX_ITEMS 10
@@ -17,6 +19,65 @@ static esp_err_t send_json(httpd_req_t *request, const char *json)
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
     return httpd_resp_sendstr(request, json);
+}
+
+/* Only requests that arrived on the SoftAP address are served; the same
+ * HTTP server is otherwise reachable from the station LAN. */
+static bool request_on_ap(httpd_req_t *request)
+{
+    esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    esp_netif_ip_info_t ip_info;
+    if (ap == NULL || esp_netif_get_ip_info(ap, &ip_info) != ESP_OK) {
+        return false;
+    }
+    struct sockaddr_storage local;
+    socklen_t length = sizeof(local);
+    if (getsockname(httpd_req_to_sockfd(request), (struct sockaddr *)&local,
+                    &length) != 0) {
+        return false;
+    }
+    if (local.ss_family == AF_INET) {
+        return ((struct sockaddr_in *)&local)->sin_addr.s_addr == ip_info.ip.addr;
+    }
+#if LWIP_IPV6
+    if (local.ss_family == AF_INET6) {
+        /* Dual-stack socket: IPv4-mapped address ::ffff:a.b.c.d. */
+        const uint8_t *bytes =
+            (const uint8_t *)&((struct sockaddr_in6 *)&local)->sin6_addr;
+        static const uint8_t mapped_prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0,
+                                                  0, 0, 0xff, 0xff};
+        return memcmp(bytes, mapped_prefix, sizeof(mapped_prefix)) == 0 &&
+               memcmp(bytes + 12, &ip_info.ip.addr, 4) == 0;
+    }
+#endif
+    return false;
+}
+
+/* Returns ESP_OK when the request may proceed, otherwise sends the error. */
+static esp_err_t authorize(httpd_req_t *request)
+{
+    ap_server_t *server = request->user_ctx;
+    if (!request_on_ap(request)) {
+        httpd_resp_set_status(request, "403 Forbidden");
+        httpd_resp_sendstr(request, "{\"detail\":\"Local API is only available on the device AP\"}");
+        return ESP_FAIL;
+    }
+    char header[16 + 64 + 8];
+    const char *token = NULL;
+    if (httpd_req_get_hdr_value_str(request, "Authorization", header,
+                                    sizeof(header)) == ESP_OK &&
+        strncmp(header, "Bearer ", 7) == 0) {
+        token = header + 7;
+    }
+    if (token == NULL || server->callbacks.check_token == NULL ||
+        !server->callbacks.check_token(server->callbacks.context, token)) {
+        httpd_resp_set_status(request, "401 Unauthorized");
+        httpd_resp_set_hdr(request, "WWW-Authenticate", "Bearer");
+        httpd_resp_set_type(request, "application/json");
+        httpd_resp_sendstr(request, "{\"detail\":\"Device token required\"}");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t call_provider(
@@ -44,18 +105,27 @@ static esp_err_t health_handler(httpd_req_t *request)
 
 static esp_err_t status_handler(httpd_req_t *request)
 {
+    if (authorize(request) != ESP_OK) {
+        return ESP_OK;
+    }
     ap_server_t *server = request->user_ctx;
     return call_provider(request, server->callbacks.status);
 }
 
 static esp_err_t latest_handler(httpd_req_t *request)
 {
+    if (authorize(request) != ESP_OK) {
+        return ESP_OK;
+    }
     ap_server_t *server = request->user_ctx;
     return call_provider(request, server->callbacks.latest_telemetry);
 }
 
 static esp_err_t config_get_handler(httpd_req_t *request)
 {
+    if (authorize(request) != ESP_OK) {
+        return ESP_OK;
+    }
     ap_server_t *server = request->user_ctx;
     return call_provider(request, server->callbacks.get_config);
 }
@@ -77,6 +147,9 @@ static size_t history_limit(httpd_req_t *request)
 
 static esp_err_t history_handler(httpd_req_t *request)
 {
+    if (authorize(request) != ESP_OK) {
+        return ESP_OK;
+    }
     ap_server_t *server = request->user_ctx;
     if (server->callbacks.telemetry_history == NULL) {
         return httpd_resp_send_err(
@@ -133,12 +206,18 @@ static esp_err_t receive_json(httpd_req_t *request, direct_json_consumer_t consu
 
 static esp_err_t config_put_handler(httpd_req_t *request)
 {
+    if (authorize(request) != ESP_OK) {
+        return ESP_OK;
+    }
     ap_server_t *server = request->user_ctx;
     return receive_json(request, server->callbacks.set_config);
 }
 
 static esp_err_t command_handler(httpd_req_t *request)
 {
+    if (authorize(request) != ESP_OK) {
+        return ESP_OK;
+    }
     ap_server_t *server = request->user_ctx;
     esp_err_t result = receive_json(request, server->callbacks.command);
     return result;

@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
@@ -44,6 +46,7 @@ static const char *const remote_forbidden_keys[] = {
     "ap_ssid",        "ap_password",      "soil_dry_raw",
     "soil_wet_raw",   "soil_enabled",     "soil_calibrated",
     "ap_enabled",     "ble_enabled",      "power_save_enabled",
+    "ap_api_token",   "ble_passkey",
 };
 
 const char *saems_power_mode_name(saems_power_mode_t mode)
@@ -416,6 +419,12 @@ static esp_err_t save_locked(config_manager_t *manager)
             handle, "cfg_ver", manager->current.config_version);
     }
     if (result == ESP_OK) {
+        result = nvs_set_str(handle, "ap_token", manager->current.ap_api_token);
+    }
+    if (result == ESP_OK) {
+        result = nvs_set_u32(handle, "ble_pk", manager->current.ble_passkey);
+    }
+    if (result == ESP_OK) {
         result = nvs_commit(handle);
     }
     nvs_close(handle);
@@ -475,13 +484,57 @@ esp_err_t config_manager_init(
         load_thresholds(handle, &manager->current.thresholds);
         load_irrigation(handle, &manager->current.irrigation);
         load_u32(handle, "cfg_ver", &manager->current.config_version);
+        load_string(handle, "ap_token", manager->current.ap_api_token,
+                    sizeof(manager->current.ap_api_token));
+        load_u32(handle, "ble_pk", &manager->current.ble_passkey);
         nvs_close(handle);
     } else if (result != ESP_ERR_NVS_NOT_FOUND) {
         return result;
     }
 
+    if (manager->current.ble_passkey < SAEMS_BLE_PASSKEY_MIN ||
+        manager->current.ble_passkey > SAEMS_BLE_PASSKEY_MAX) {
+        /* First boot with passkey pairing: pick a random 6-digit passkey
+         * and keep it, so bonded phones and the printed value stay valid. */
+        manager->current.ble_passkey =
+            SAEMS_BLE_PASSKEY_MIN +
+            esp_random() % (SAEMS_BLE_PASSKEY_MAX - SAEMS_BLE_PASSKEY_MIN + 1U);
+        nvs_handle_t write_handle;
+        if (nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &write_handle) == ESP_OK) {
+            (void)nvs_set_u32(write_handle, "ble_pk", manager->current.ble_passkey);
+            (void)nvs_commit(write_handle);
+            nvs_close(write_handle);
+        }
+    }
+
     manager->initialized = true;
     return ESP_OK;
+}
+
+bool config_manager_check_api_token(config_manager_t *manager, const char *token)
+{
+    if (manager == NULL || token == NULL || !manager->initialized) {
+        return false;
+    }
+    char expected[SAEMS_API_TOKEN_MAX_LEN + 1];
+    xSemaphoreTake(manager_mutex(manager), portMAX_DELAY);
+    (void)snprintf(expected, sizeof(expected), "%s",
+                   manager->current.ap_api_token[0] != '\0'
+                       ? manager->current.ap_api_token
+                       : manager->current.ap_password);
+    xSemaphoreGive(manager_mutex(manager));
+    const size_t expected_length = strlen(expected);
+    const size_t token_length = strnlen(token, SAEMS_API_TOKEN_MAX_LEN + 1U);
+    if (expected_length < SAEMS_WIFI_PASSWORD_MIN_LEN ||
+        token_length != expected_length) {
+        return false;
+    }
+    /* Constant time over the expected length. */
+    unsigned char difference = 0U;
+    for (size_t index = 0U; index < expected_length; index++) {
+        difference |= (unsigned char)(expected[index] ^ token[index]);
+    }
+    return difference == 0U;
 }
 
 esp_err_t config_manager_get(
@@ -568,7 +621,27 @@ esp_err_t config_manager_update_json(
         xSemaphoreGive(manager_mutex(manager));
         return parse_result;
     }
+    parse_result = parse_optional_string(
+        document, "ap_api_token", updated.ap_api_token,
+        sizeof(updated.ap_api_token));
+    if (parse_result == ESP_OK && updated.ap_api_token[0] != '\0' &&
+        strlen(updated.ap_api_token) < SAEMS_WIFI_PASSWORD_MIN_LEN) {
+        parse_result = ESP_ERR_INVALID_ARG;
+    }
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
     int parsed = 0;
+    parse_result = parse_optional_int(
+        document, "ble_passkey", (int)SAEMS_BLE_PASSKEY_MIN,
+        (int)SAEMS_BLE_PASSKEY_MAX, &parsed);
+    if (parse_result == ESP_OK) {
+        updated.ble_passkey = (uint32_t)parsed;
+    } else if (parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
     parse_result = parse_optional_int(
         document, "telemetry_interval_s", 1, 3600, &parsed);
     if (parse_result == ESP_OK) {
@@ -661,6 +734,12 @@ esp_err_t config_manager_update_json(
         updated.config_version = 0U;
     }
 
+    /* Station networks must use WPA2-PSK (or better): no open/WEP. */
+    if (updated.wifi_ssid[0] != '\0' &&
+        strlen(updated.wifi_password) < SAEMS_WIFI_PASSWORD_MIN_LEN) {
+        xSemaphoreGive(manager_mutex(manager));
+        return ESP_ERR_INVALID_ARG;
+    }
     if (updated.device_id[0] == '\0' ||
         (updated.ap_enabled &&
          (updated.ap_ssid[0] == '\0' || strlen(updated.ap_password) < 8)) ||

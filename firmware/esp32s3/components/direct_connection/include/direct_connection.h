@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -11,6 +12,8 @@ typedef esp_err_t (*direct_history_provider_t)(
     void *context, size_t limit, char *output, size_t output_size);
 typedef esp_err_t (*direct_json_consumer_t)(
     void *context, const char *json, size_t json_length);
+/* AP REST bearer token check; NULL rejects every protected request. */
+typedef bool (*direct_token_check_t)(void *context, const char *token);
 
 typedef struct {
     direct_json_provider_t device_info;
@@ -20,6 +23,7 @@ typedef struct {
     direct_json_provider_t get_config;
     direct_json_consumer_t set_config;
     direct_json_consumer_t command;
+    direct_token_check_t check_token;
     void *context;
 } direct_connection_callbacks_t;
 
@@ -42,9 +46,17 @@ esp_err_t ap_server_start(
     ap_server_t *server, const direct_connection_callbacks_t *callbacks);
 bool ap_server_is_running(ap_server_t *server);
 
+/*
+ * passkey: 6-digit static passkey for LE Secure Connections pairing with
+ * MITM protection (the phone asks the user to type it). Telemetry, config
+ * and command characteristics then require an authenticated link; only
+ * device_info stays readable before pairing. 0 keeps Just Works pairing
+ * (SAEMS_BLE_PASSKEY_PAIRING disabled).
+ */
 esp_err_t ble_manager_start(
     ble_manager_t *manager,
     const char *device_name,
+    uint32_t passkey,
     const direct_connection_callbacks_t *callbacks);
 esp_err_t ble_manager_notify_telemetry(
     ble_manager_t *manager, const char *payload);

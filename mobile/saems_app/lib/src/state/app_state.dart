@@ -29,6 +29,14 @@ final apiTokenProvider = FutureProvider<String?>(
   (ref) => ref.watch(settingsStoreProvider).readToken(),
 );
 
+final sessionUserProvider = FutureProvider<String?>(
+  (ref) => ref.watch(settingsStoreProvider).readSessionUser(),
+);
+
+final deviceTokenProvider = FutureProvider<String?>(
+  (ref) => ref.watch(settingsStoreProvider).readDeviceToken(),
+);
+
 class AppSettingsNotifier extends AsyncNotifier<AppSettings> {
   @override
   Future<AppSettings> build() => ref.read(settingsStoreProvider).load();
@@ -62,7 +70,9 @@ final telemetryRepositoryProvider = Provider<TelemetryRepository>((ref) {
       baseUrl: settings.apiBaseUrl,
       token: ref.watch(apiTokenProvider).value,
     ),
-    DataSourceType.wifiAp => WifiApDeviceTransport(),
+    DataSourceType.wifiAp => WifiApDeviceTransport(
+      token: ref.watch(deviceTokenProvider).value,
+    ),
     DataSourceType.mock => MockDeviceTransport(),
     DataSourceType.ble => BleDeviceTransport(ref.watch(bleAdapterProvider)),
     DataSourceType.cache => MockDeviceTransport(),

@@ -49,9 +49,23 @@ không tạo dòng trùng.
 
 ## Xác thực và credentials
 
-- `/health` công khai để kiểm tra trạng thái.
-- API dữ liệu dùng `Authorization: Bearer <token>`.
-- Dashboard dùng username `saems`; password là API token.
+- `/health` và `POST /auth/login` công khai.
+- **Đăng nhập (app):** `POST /auth/login` với `{"username","password"}` trả
+  `access_token` (hết hạn sau `SAEMS_SESSION_TTL_HOURS`, mặc định 30 ngày). Gửi
+  token đó như `Authorization: Bearer <token>`. `POST /auth/logout` thu hồi token;
+  `GET /auth/me` cho biết đang đăng nhập bằng gì. Server chỉ lưu SHA-256 của token
+  (`data/auth.db`). Sai mật khẩu 5 lần trong 15 phút thì bị khóa 5 phút (HTTP 429).
+- **Đặt mật khẩu admin** (chạy trên Pi, mật khẩu không hiện ra và không vào log):
+
+  ```bash
+  cd ~/saems-mini-server && .venv/bin/python auth.py set-password --user admin
+  sudo systemctl restart saems-api
+  ```
+
+  Mật khẩu tối thiểu 10 ký tự, lưu dạng băm PBKDF2-SHA256 trong `.env`
+  (`SAEMS_ADMIN_PASSWORD_HASH`). Chưa đặt mật khẩu thì `/auth/login` trả 503.
+- API token cũ (`API_ACCESS_TOKEN`) vẫn dùng được cho script và app bản cũ.
+- Dashboard (HTTP Basic): user admin + mật khẩu, hoặc username `saems` + API token.
 - MQTT dùng tài khoản/ACL riêng cho ESP32 và server.
 - Credentials cục bộ nằm trong `.local/device-access.json` hoặc file `.env`
   trên Pi; không được ghi vào README, source hoặc commit Git.

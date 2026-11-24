@@ -547,11 +547,18 @@ static esp_err_t provide_device_info(
                           "{\"device_id\":\"%s\",\"project\":\"SAEMS\","
                           "\"firmware_version\":\"%s\","
                           "\"ble_protocol\":1,\"api_version\":1,"
-                          "\"battery_source\":\"%s\",\"pump_simulated\":%s}",
+                          "\"battery_source\":\"%s\",\"pump_simulated\":%s,"
+                          "\"pairing\":\"%s\"}",
                           application.config.device_id,
                           description->version,
                           battery_source_name(application.battery.source),
-                          SAEMS_PUMP_SIMULATED ? "true" : "false");
+                          SAEMS_PUMP_SIMULATED ? "true" : "false",
+#ifdef CONFIG_SAEMS_BLE_PASSKEY_PAIRING
+                          "passkey"
+#else
+                          "just_works"
+#endif
+                          );
     return length < 0 || (size_t)length >= output_size
                ? ESP_ERR_INVALID_SIZE
                : ESP_OK;
@@ -619,6 +626,12 @@ static esp_err_t provide_config(
     (void)context;
     return config_manager_to_json(
         &application.config_manager, output, output_size);
+}
+
+static bool check_local_token(void *context, const char *token)
+{
+    (void)context;
+    return config_manager_check_api_token(&application.config_manager, token);
 }
 
 static esp_err_t update_config(
@@ -745,6 +758,7 @@ static direct_connection_callbacks_t direct_callbacks(void)
         .get_config = provide_config,
         .set_config = update_config,
         .command = handle_command_json,
+        .check_token = check_local_token,
         .context = &application,
     };
 }
@@ -1122,6 +1136,14 @@ esp_err_t application_manager_start(void)
     }
 
     const direct_connection_callbacks_t callbacks = direct_callbacks();
+#ifdef CONFIG_SAEMS_BLE_PASSKEY_PAIRING
+    if (application.config.ble_enabled) {
+        /* Printed on the serial console only (physical access); the app
+         * user types it when Android asks to pair. */
+        ESP_LOGW(TAG, "BLE pairing passkey: %06" PRIu32,
+                 application.config.ble_passkey);
+    }
+#endif
     if (application.config.ap_enabled) {
         ESP_RETURN_ON_ERROR(
             ap_server_start(&application.ap_server, &callbacks),
@@ -1137,6 +1159,11 @@ esp_err_t application_manager_start(void)
         ESP_RETURN_ON_ERROR(
             ble_manager_start(&application.ble_manager,
                               ble_name,
+#ifdef CONFIG_SAEMS_BLE_PASSKEY_PAIRING
+                              application.config.ble_passkey,
+#else
+                              0U,
+#endif
                               &callbacks),
             TAG,
             "BLE manager");

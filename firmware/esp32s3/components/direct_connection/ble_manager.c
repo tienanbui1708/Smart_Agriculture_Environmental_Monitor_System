@@ -5,11 +5,16 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "host/ble_att.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
+/* After ble_hs.h: it defines NIMBLE_BLE_SM, otherwise ble_sm_inject_io
+ * compiles to a stub. */
+#include "host/ble_sm.h"
+#include "host/ble_store.h"
 #include "host/ble_uuid.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
@@ -29,6 +34,9 @@ static uint16_t telemetry_handle;
 static uint16_t config_handle;
 static uint16_t command_handle;
 static uint16_t next_message_id = 1;
+static uint32_t pairing_passkey;
+/* CCCD enabled before the link was authenticated; honoured after pairing. */
+static bool subscribe_pending;
 void ble_store_config_init(void);
 
 static const ble_uuid128_t service_uuid = BLE_UUID128_INIT(
@@ -46,6 +54,17 @@ static const ble_uuid128_t config_uuid = BLE_UUID128_INIT(
 static const ble_uuid128_t command_uuid = BLE_UUID128_INIT(
     0x01, 0x00, 0x00, 0x00, 0x2c, 0x9a, 0x3b, 0x9e,
     0x70, 0x4d, 0x7a, 0x6c, 0x05, 0x00, 0xf0, 0xa0);
+
+#ifdef CONFIG_SAEMS_BLE_PASSKEY_PAIRING
+/* Authenticated (MITM, passkey) encryption is required. */
+#define SECURE_READ (BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC | \
+                     BLE_GATT_CHR_F_READ_AUTHEN)
+#define SECURE_WRITE (BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC | \
+                      BLE_GATT_CHR_F_WRITE_AUTHEN)
+#else
+#define SECURE_READ BLE_GATT_CHR_F_READ
+#define SECURE_WRITE (BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC)
+#endif
 
 static int append_provider_value(
     struct ble_gatt_access_ctxt *ctxt, direct_json_provider_t provider)
@@ -140,20 +159,19 @@ static const struct ble_gatt_svc_def services[] = {
             {
                 .uuid = &telemetry_uuid.u,
                 .access_cb = gatt_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .flags = SECURE_READ | BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &telemetry_handle,
             },
             {
                 .uuid = &config_uuid.u,
                 .access_cb = gatt_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE |
-                         BLE_GATT_CHR_F_WRITE_ENC,
+                .flags = SECURE_READ | SECURE_WRITE,
                 .val_handle = &config_handle,
             },
             {
                 .uuid = &command_uuid.u,
                 .access_cb = gatt_access,
-                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC,
+                .flags = SECURE_WRITE,
                 .val_handle = &command_handle,
             },
             {0},
@@ -246,12 +264,27 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         active_manager->connected = false;
         active_manager->subscribed = false;
+        subscribe_pending = false;
         active_manager->connection_handle = BLE_HS_CONN_HANDLE_NONE;
         ESP_LOGI(TAG, "BLE disconnected; advertising resumed");
         advertise();
         return 0;
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == telemetry_handle) {
+#ifdef CONFIG_SAEMS_BLE_PASSKEY_PAIRING
+            /* Notifications carry the same data as the protected read. */
+            struct ble_gap_conn_desc subscriber;
+            if (event->subscribe.cur_notify != 0 &&
+                (ble_gap_conn_find(event->subscribe.conn_handle, &subscriber) != 0 ||
+                 !subscriber.sec_state.authenticated)) {
+                ESP_LOGW(TAG, "Telemetry subscription before passkey pairing; "
+                         "requesting security");
+                (void)ble_gap_security_initiate(event->subscribe.conn_handle);
+                active_manager->subscribed = false;
+                subscribe_pending = true;
+                return 0;
+            }
+#endif
             active_manager->subscribed = event->subscribe.cur_notify != 0;
             ESP_LOGI(TAG,
                      "Telemetry notify subscription=%d",
@@ -267,15 +300,39 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_ENC_CHANGE: {
         struct ble_gap_conn_desc connection;
         int result = ble_gap_conn_find(event->enc_change.conn_handle, &connection);
-        ESP_LOGI(TAG, "BLE encryption status=%d encrypted=%d bonded=%d",
+        ESP_LOGI(TAG, "BLE encryption status=%d encrypted=%d authenticated=%d bonded=%d",
                  event->enc_change.status,
                  result == 0 && connection.sec_state.encrypted,
+                 result == 0 && connection.sec_state.authenticated,
                  result == 0 && connection.sec_state.bonded);
+        if (subscribe_pending && event->enc_change.status == 0 && result == 0 &&
+            connection.sec_state.authenticated) {
+            subscribe_pending = false;
+            active_manager->subscribed = true;
+            notify_latest_telemetry();
+        }
         return 0;
     }
-    case BLE_GAP_EVENT_REPEAT_PAIRING:
-        ESP_LOGW(TAG, "Peer requested repeat pairing; existing bond preserved");
-        return BLE_GAP_REPEAT_PAIRING_IGNORE;
+    case BLE_GAP_EVENT_PASSKEY_ACTION:
+        if (event->passkey.params.action == BLE_SM_IOACT_DISP) {
+            struct ble_sm_io io = {0};
+            io.action = BLE_SM_IOACT_DISP;
+            io.passkey = pairing_passkey;
+            int result = ble_sm_inject_io(event->passkey.conn_handle, &io);
+            ESP_LOGI(TAG, "Passkey pairing requested; enter the device passkey "
+                     "on the phone (inject=%d)", result);
+        }
+        return 0;
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
+        /* The phone lost its keys or still has an old Just Works bond:
+         * forget ours and pair again (passkey protects the new pairing). */
+        struct ble_gap_conn_desc connection;
+        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &connection) == 0) {
+            (void)ble_store_util_delete_peer(&connection.peer_id_addr);
+        }
+        ESP_LOGW(TAG, "Repeat pairing: old bond removed, pairing again");
+        return BLE_GAP_REPEAT_PAIRING_RETRY;
+    }
     default:
         return 0;
     }
@@ -304,6 +361,7 @@ static void host_task(void *parameter)
 esp_err_t ble_manager_start(
     ble_manager_t *manager,
     const char *device_name,
+    uint32_t passkey,
     const direct_connection_callbacks_t *callbacks)
 {
     if (manager == NULL || device_name == NULL || callbacks == NULL ||
@@ -321,7 +379,19 @@ esp_err_t ble_manager_start(
         return result;
     }
     ble_hs_cfg.sync_cb = on_sync;
+    pairing_passkey = passkey;
+#ifdef CONFIG_SAEMS_BLE_PASSKEY_PAIRING
+    if (passkey < 100000U || passkey > 999999U) {
+        active_manager = NULL;
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* "Display only": the passkey is fixed per device and printed on the
+     * serial log / label; the phone asks the user to type it. */
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_ONLY;
+    ble_hs_cfg.sm_mitm = 1;
+#else
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+#endif
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;

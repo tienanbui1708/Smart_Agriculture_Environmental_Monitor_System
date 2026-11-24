@@ -10,8 +10,12 @@ import 'direct_config_transport.dart';
 import 'dio_factory.dart';
 
 class WifiApDeviceTransport implements DeviceTransport, DirectConfigTransport {
-  WifiApDeviceTransport({String baseUrl = AppConfig.wifiApBaseUrl, Dio? dio})
-    : _dio = dio ?? createDio(baseUrl);
+  /// [token]: device REST token, by default the AP Wi-Fi password.
+  WifiApDeviceTransport({
+    String baseUrl = AppConfig.wifiApBaseUrl,
+    String? token,
+    Dio? dio,
+  }) : _dio = dio ?? createDio(baseUrl, token: token);
 
   final Dio _dio;
 

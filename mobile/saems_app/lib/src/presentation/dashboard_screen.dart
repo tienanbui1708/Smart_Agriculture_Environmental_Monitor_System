@@ -6,6 +6,8 @@ import '../models/telemetry.dart';
 import '../models/thresholds.dart';
 import '../state/app_state.dart';
 import '../models/watering.dart';
+import '../core/app_exception.dart';
+import 'login_screen.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -253,18 +255,38 @@ class _ErrorDashboard extends StatelessWidget {
   final Object error;
 
   @override
-  Widget build(BuildContext context) => Card(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        children: [
-          const Icon(Icons.cloud_off, size: 48),
-          const SizedBox(height: 12),
-          const Text('Không lấy được dữ liệu'),
-          const SizedBox(height: 8),
-          Text('$error', textAlign: TextAlign.center),
-        ],
+  Widget build(BuildContext context) {
+    final error = this.error;
+    final needsLogin =
+        error is AppException &&
+        error.kind == AppErrorKind.unauthorized &&
+        !error.message.contains('mã thiết bị');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            Icon(needsLogin ? Icons.lock_outline : Icons.cloud_off, size: 48),
+            const SizedBox(height: 12),
+            const Text('Không lấy được dữ liệu'),
+            const SizedBox(height: 8),
+            Text(
+              error is AppException ? error.message : '$error',
+              textAlign: TextAlign.center,
+            ),
+            if (needsLogin) ...[
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).push<void>(
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                ),
+                icon: const Icon(Icons.login),
+                label: const Text('Đăng nhập lại'),
+              ),
+            ],
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
