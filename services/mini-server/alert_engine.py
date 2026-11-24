@@ -10,7 +10,8 @@ backlog=1 but do not each send a Telegram message.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import os
 from typing import Any, Callable
 
 from device_config import METRICS, load_configuration
@@ -18,6 +19,8 @@ from device_config import METRICS, load_configuration
 FRESH_SAMPLE_SECONDS = 600
 DEFAULT_OFFLINE_AFTER_SECONDS = 900
 CONNECTIVITY = "connectivity"
+# Times in Telegram messages are shown in the farm's local time (Vietnam, UTC+7).
+LOCAL_TZ = timezone(timedelta(hours=float(os.environ.get("SAEMS_UTC_OFFSET_HOURS", "7"))))
 
 LABELS = {
     "temperature_c": ("Nhiệt độ", "°C"),
@@ -176,6 +179,18 @@ def process_telemetry(connection, device_id: str, payload: dict, notify: Notify,
     return messages
 
 
+def format_duration(seconds: float) -> str:
+    """Human Vietnamese duration: '45 ngày 3 giờ', '2 giờ 5 phút', '7 phút'."""
+    total_minutes = max(int(seconds // 60), 0)
+    days, rest = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f"{days} ngày {hours} giờ" if hours else f"{days} ngày"
+    if hours:
+        return f"{hours} giờ {minutes} phút" if minutes else f"{hours} giờ"
+    return f"{minutes} phút"
+
+
 def offline_after_seconds(configuration: dict) -> int:
     if configuration.get("offline_alert_after_s"):
         return int(configuration["offline_alert_after_s"])
@@ -203,10 +218,10 @@ def check_offline(connection, notify: Notify, now: datetime | None = None) -> li
         silent = (now - last_time).total_seconds()
         if silent <= limit:
             continue
-        minutes = int(silent // 60)
+        local_seen = last_time.astimezone(LOCAL_TZ).strftime("%H:%M %d/%m/%Y")
         text = (
-            f"🔴 {device_id}: mất kết nối với server {minutes} phút "
-            f"(lần cuối {last_time.isoformat(timespec='seconds')}). "
+            f"🔴 {device_id}: mất kết nối với server {format_duration(silent)} "
+            f"(lần cuối {local_seen}). "
             "Thiết bị vẫn lưu dữ liệu offline và sẽ gửi bù khi có mạng."
         )
         notify(text)

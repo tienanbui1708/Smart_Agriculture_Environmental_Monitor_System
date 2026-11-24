@@ -141,6 +141,13 @@ class AlertEngineTests(unittest.TestCase):
         self.feed(25.0)
         self.assertIn("kết nối lại", self.sent[-1])
 
+    def test_format_duration(self):
+        self.assertEqual(alert_engine.format_duration(64815 * 60), "45 ngày")
+        self.assertEqual(alert_engine.format_duration(2 * 86400 + 3 * 3600), "2 ngày 3 giờ")
+        self.assertEqual(alert_engine.format_duration(3 * 3600 + 5 * 60), "3 giờ 5 phút")
+        self.assertEqual(alert_engine.format_duration(3600), "1 giờ")
+        self.assertEqual(alert_engine.format_duration(16 * 60 + 30), "16 phút")
+
     def test_offline_limit_follows_interval(self):
         self.assertEqual(alert_engine.offline_after_seconds({}), 900)
         self.assertEqual(alert_engine.offline_after_seconds({"telemetry_interval_s": 10}), 300)
