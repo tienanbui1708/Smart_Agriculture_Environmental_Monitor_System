@@ -1,6 +1,6 @@
 # Báo cáo phân tích tĩnh firmware
 
-Tạo lúc 2026-11-24 16:26 UTC bằng `firmware/esp32s3/tools/static_analysis.py`. Deviation và lý do: [`misra-deviations.md`](misra-deviations.md).
+Tạo lúc 2026-11-24 16:41 UTC bằng `firmware/esp32s3/tools/static_analysis.py`. Deviation và lý do: [`misra-deviations.md`](misra-deviations.md).
 
 - cppcheck: Cppcheck 2.14.0, addon MISRA C:2012
 - clang-tidy: LLVM version 20.1.1, checks `-*,bugprone-*,cert-*,clang-analyzer-*,-bugprone-easily-swappable-parameters,-bugprone-assignment-in-if-condition,-cert-dcl37-c,-cert-dcl51-cpp,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling`
@@ -30,13 +30,13 @@ Phần này gọi API ESP-IDF/FreeRTOS/NimBLE (macro, con trỏ void, nhiều đ
 
 | Quy tắc | Số lần |
 |---|---|
-| `misra-c2012-2.5` | 1171 |
+| `misra-c2012-2.5` | 1172 |
 | `misra-c2012-15.5` | 283 |
-| `misra-config` | 225 |
+| `misra-config` | 226 |
 | `misra-c2012-12.1` | 215 |
 | `misra-c2012-10.4` | 51 |
 | `misra-c2012-17.7` | 26 |
-| `misra-c2012-17.3` | 21 |
+| `misra-c2012-17.3` | 22 |
 | `misra-c2012-15.7` | 13 |
 | `misra-c2012-5.9` | 12 |
 | `misra-c2012-18.4` | 10 |
@@ -49,6 +49,7 @@ Phần này gọi API ESP-IDF/FreeRTOS/NimBLE (macro, con trỏ void, nhiều đ
 | `misra-c2012-10.8` | 2 |
 | `misra-c2012-22.8` | 2 |
 | `misra-c2012-13.3` | 2 |
+| `misra-c2012-16.6` | 1 |
 | `misra-c2012-12.2` | 1 |
 | `misra-c2012-10.3` | 1 |
 | `misra-c2012-20.9` | 1 |

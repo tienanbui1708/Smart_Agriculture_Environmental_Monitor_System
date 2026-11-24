@@ -138,10 +138,10 @@ config SAEMS_RELAY_MAX_ON_SECONDS
 
 config SAEMS_SOIL_SENSOR_ENABLED
     bool "Enable LM393 soil moisture sensor"
-    default n
+    default y
     help
-        Enable only after attaching the probe. Percentage output also needs
-        measured endpoints and soil_calibrated=true in the device config.
+        LM393 probe on GPIO4 (AO) / GPIO5 (DO), VCC 3.3 V. Percentage output
+        needs measured dry/wet endpoints (see SAEMS_SOIL_DEFAULTS_MEASURED).
 
 config SAEMS_SOIL_RAW_READOUT_ENABLED
     bool "Read LM393 raw ADC for calibration even when soil is disabled in NVS"
@@ -154,14 +154,28 @@ config SAEMS_SOIL_RAW_READOUT_ENABLED
 config SAEMS_SOIL_DRY_RAW
     int "LM393 dry ADC value"
     range 0 4095
-    default 3000
+    default 4095
     depends on SAEMS_SOIL_SENSOR_ENABLED
+    help
+        Measured on the project probe in dry air (2026-10, soil_calibration.ps1).
 
 config SAEMS_SOIL_WET_RAW
     int "LM393 wet ADC value"
     range 0 4095
-    default 1200
+    default 2080
     depends on SAEMS_SOIL_SENSOR_ENABLED
+    help
+        Measured on the project probe in water (2026-10).
+
+config SAEMS_SOIL_DEFAULTS_MEASURED
+    bool "Dry/wet defaults above are measured on this probe"
+    default y
+    depends on SAEMS_SOIL_SENSOR_ENABLED
+    help
+        A device with no stored calibration flag reports percentages with
+        these endpoints. NVS endpoints that differ from them (for example
+        old placeholders) stay uncalibrated until confirmed with
+        soil_calibration.ps1. Disable for a different probe type.
 
 config SAEMS_PUMP_SIMULATED
     bool "Pump is simulated (no pump or pump supply attached)"

@@ -78,7 +78,7 @@ HTTPS cho app/API không đồng nghĩa với quyền SSH vào Pi. `Logs`, `Db` 
 Chạy tại thư mục gốc repository:
 
 ```powershell
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 
 # Kiểm tra health và bản telemetry mới nhất qua Internet
 .\scripts\windows\run_server.ps1 -Action Check

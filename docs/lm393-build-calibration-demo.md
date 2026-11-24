@@ -53,7 +53,7 @@ biến trở chỉnh ngưỡng DO, không hiệu chuẩn phần trăm từ AO.
 Mở PowerShell; đường dẫn workspace thực tế đã đổi thành SAEMS:
 
 ```powershell
-$saemsRepo = 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+$saemsRepo = 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 Set-Location $saemsRepo
 . 'C:\Espressif\tools\Microsoft.v6.0.3.PowerShell_profile.ps1'
 ```
@@ -79,7 +79,7 @@ Khi tự cấu hình menuconfig, bật:
 - `Read LM393 raw ADC for calibration even when soil is disabled in NVS`.
 - Giữ TLS certificate date validation, SNTP và NimBLE host stack 8192.
 
-**Chỉ build module này**, không chạy `idf.py build` ở root chứa project mẫu.
+**Chỉ build module này** (`firmware/esp32s3`); firmware cũ đã chuyển vào `legacy/root-firmware/`.
 Kết quả phải là `saems_esp32s3.bin`, không phải `hello_world.bin`.
 
 ## 3. Flash và theo dõi device
@@ -137,7 +137,7 @@ Có thể đọc raw qua UART mà laptop vẫn kết nối Internet. Hoặc lapt
 `.local/firmware-ap-access.json`:
 
 ```powershell
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 .\scripts\windows\soil_calibration.ps1 -Action Read
 ```
 
@@ -218,7 +218,7 @@ $saemsAdb = 'C:\Users\Tien An\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 $env:PUB_CACHE = 'C:\puro-smartfarm\shared\pub_cache'
 $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
 $env:ANDROID_HOME = 'C:\Users\Tien An\AppData\Local\Android\Sdk'
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github\mobile\saems_app'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github\mobile\saems_app'  # đổi theo nơi clone repo
 $saemsFlutter = 'C:\puro-smartfarm\envs\smartfarm\flutter\bin\flutter.bat'
 & $saemsFlutter pub get
 & $saemsFlutter analyze

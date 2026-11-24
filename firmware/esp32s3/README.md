@@ -83,11 +83,16 @@ thiết bị vẫn lấy mẫu và giữ bản ghi trong FIFO NVS. Khi MQTT kế
 - LM393 trả `soil_raw`, `soil_digital` và chỉ trả `soil_moisture_pct` sau khi
   đã lưu hai mốc ADC khô/ướt thực tế.
 - Cảm biến lỗi hoặc chưa cấu hình trả `null`; firmware không tạo dữ liệu giả.
-- `battery_pct` hiện là `null` vì chưa có mạch đo pin.
+- `battery_pct` là `null` khi `SAEMS_BATTERY_SOURCE=none` (cắm USB); xem
+  [pump-battery.md](../../docs/pump-battery.md) cho nguồn `adc`/`simulated`.
 - `data_mode` của firmware thật luôn là `real`.
 
-Mốc LM393 đang dùng trong đợt demo là `dry=4095`, `wet=2080`. Đây là mốc của
-que/mẫu đất đã đo, không phải hằng số áp dụng cho mọi cảm biến hoặc loại đất.
+Mốc LM393 đo trên que của nhóm là `dry=4095`, `wet=2080`. Đây cũng là mặc định
+Kconfig (`SAEMS_SOIL_DRY_RAW`, `SAEMS_SOIL_WET_RAW`, `SAEMS_SOIL_DEFAULTS_MEASURED=y`):
+board mới chưa lưu cờ hiệu chuẩn sẽ trả phần trăm luôn. Mốc lưu trong NVS (qua
+`soil_calibration.ps1`) luôn được ưu tiên. Board có mốc cũ khác các giá trị này (ví
+dụ mốc giữ chỗ 3000/1200) vẫn ở trạng thái `uncalibrated` cho tới khi xác nhận lại.
+Dùng que hoặc loại đất khác thì phải hiệu chuẩn lại.
 
 ## BLE, Wi-Fi AP và Power Manager
 
@@ -114,7 +119,7 @@ Tất cả lệnh dưới đây chạy từ **thư mục gốc repository**, kh�
 `firmware/esp32s3`:
 
 ```powershell
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 
 # Chỉ build
 .\scripts\windows\run_device.cmd -Action Build -PowerProfile Direct

@@ -1,5 +1,31 @@
 # SAEMS – trạng thái mã nguồn đã chuẩn hóa
 
+## Hoàn thiện theo PRD (2026-11-07 → 2026-11-24)
+
+Bảy giai đoạn bổ sung A–G trong [UPDATE-PLAN.md](UPDATE-PLAN.md) đã xong phần code
+trên nhánh `feature/prd-completion`:
+
+- ngưỡng, cấu hình từ xa, Telegram;
+- máy bơm và pin;
+- vòng ghi offline trên flash;
+- LED trạng thái;
+- bảo mật và đăng nhập;
+- phân tích tĩnh MISRA, test, script nghiệm thu;
+- dọn repo.
+
+Server đã triển khai lên Raspberry Pi; app đã cài trên A24 và Pixel 6.
+
+Còn chờ phần cứng (board đang lắp lại):
+
+- flash toàn bộ firmware mới (bảng phân vùng có `telemetry` 6 MB);
+- nghiệm thu từng giai đoạn theo các mục 🔧 trong kế hoạch;
+- bài test Giai đoạn 4 (`scripts/acceptance/stage4_resilience.py`);
+- đo dòng ([energy-measurement.md](energy-measurement.md)).
+
+Admin cần đặt mật khẩu đăng nhập server (`auth.py set-password`).
+
+Các mục bên dưới là nhật ký trước đợt này, giữ nguyên làm lịch sử.
+
 ## Power Manager runtime ngày 2026-10-10 — build đạt, chưa flash bản này
 
 - Một firmware hiện chứa đủ `direct`, `light` và `battery`; app đổi `power_mode`

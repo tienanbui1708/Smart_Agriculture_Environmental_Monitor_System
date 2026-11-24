@@ -8,20 +8,20 @@ Pi 4, app Android, BLE, Wi-Fi AP, offline sync và Power Manager.
 Thư mục làm việc:
 
 ```text
-C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github
+E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github
 ```
 
 Khuyến nghị dùng **PowerShell**. Dấu nhắc đúng phải có dạng:
 
 ```text
-PS C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github>
+PS E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github>
 ```
 
 Nếu đang ở Command Prompt với dấu nhắc `C:\...>`, nhập:
 
 ```text
 C:\...> powershell
-PS C:\...> Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+PS C:\...> Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'
 ```
 
 Sau khi dấu nhắc đổi thành `PS ...>`, mới chạy các lệnh `.ps1` trong tài liệu.

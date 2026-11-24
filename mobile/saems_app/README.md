@@ -39,7 +39,7 @@ Chạy từ **thư mục gốc repository**. Pixel 6 phải được mở trư�
 Studio Device Manager; A24 phải bật USB debugging và chấp nhận quyền ADB.
 
 ```powershell
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 
 # Chạy và xem log trên Pixel 6 emulator
 .\scripts\windows\run_app.ps1 -Action Run -Target Pixel6

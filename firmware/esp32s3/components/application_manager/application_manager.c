@@ -1025,6 +1025,9 @@ esp_err_t application_manager_start(void)
     defaults.soil_enabled = true;
     defaults.soil_dry_raw = CONFIG_SAEMS_SOIL_DRY_RAW;
     defaults.soil_wet_raw = CONFIG_SAEMS_SOIL_WET_RAW;
+#ifdef CONFIG_SAEMS_SOIL_DEFAULTS_MEASURED
+    defaults.soil_calibrated = true;
+#endif
 #else
     defaults.soil_dry_raw = 3000;
     defaults.soil_wet_raw = 1200;

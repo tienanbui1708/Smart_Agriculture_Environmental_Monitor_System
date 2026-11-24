@@ -85,10 +85,13 @@ settings = {
     "CONFIG_SAEMS_POWER_SAVE_ENABLED": "y",
     "CONFIG_SAEMS_DEEP_SLEEP_SYNC_WINDOW_SECONDS": "15",
     "CONFIG_SAEMS_BATTERY_MAINTENANCE_WINDOW_SECONDS": "10",
-    "CONFIG_SAEMS_SOIL_SENSOR_ENABLED": "y" if args.soil_raw else "n",
+    # Probe attached; endpoints measured 2026-10 (dry air 4095, water 2080).
+    # Calibration already stored in NVS always wins over these defaults.
+    "CONFIG_SAEMS_SOIL_SENSOR_ENABLED": "y",
     "CONFIG_SAEMS_SOIL_RAW_READOUT_ENABLED": "y" if args.soil_raw else "n",
-    "CONFIG_SAEMS_SOIL_DRY_RAW": "3000",
-    "CONFIG_SAEMS_SOIL_WET_RAW": "1200",
+    "CONFIG_SAEMS_SOIL_DRY_RAW": "4095",
+    "CONFIG_SAEMS_SOIL_WET_RAW": "2080",
+    "CONFIG_SAEMS_SOIL_DEFAULTS_MEASURED": "y",
     "CONFIG_MBEDTLS_HAVE_TIME_DATE": "y",
     "CONFIG_LWIP_SNTP_MAX_SERVERS": "3",
     "CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE": "8192",

@@ -18,15 +18,15 @@ liệu riêng tư không nằm trong báo cáo hoặc Git.
 
 ### Cấu trúc sau khi hợp nhất nhánh
 
-- `components/` và `main/` ở root là firmware baseline của
-  `feature/Hien/firmware`; mã này được giữ nguyên để bảo toàn phần việc nhóm.
+- `legacy/root-firmware/` là firmware baseline của `feature/Hien/firmware`
+  (trước đây nằm ở root; chuyển bằng `git mv` ngày 2026-11-24 nên còn lịch sử).
 - `firmware/esp32s3/` là firmware modular đã dùng cho demo tích hợp hiện tại.
 - `services/mini-server/` là source Raspberry Pi.
 - `mobile/saems_app/` là source Flutter Android.
 - `scripts/windows/` là điểm vào thống nhất để build và demo.
 
-Các lệnh `run_device.cmd/run_device.ps1` trỏ vào `firmware/esp32s3/`, không
-build project ESP-IDF ở root.
+Các lệnh `run_device.cmd/run_device.ps1` trỏ vào `firmware/esp32s3/`. Root repo
+không còn project ESP-IDF nào.
 
 ## 2. Kiến trúc tổng thể
 
@@ -170,7 +170,7 @@ bị không cần flash lại khi đổi mode.
 Mở PowerShell tại root:
 
 ```powershell
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 ```
 
 Ba terminal online tối thiểu:

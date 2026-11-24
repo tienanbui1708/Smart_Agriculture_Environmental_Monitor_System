@@ -30,7 +30,7 @@ Ký hiệu: `[x]` xong · `[~]` đang làm · `[ ]` chưa làm · 🔧 cần ph�
 | D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[x]` code · 🔧 chờ board |
 | E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[x]` code · 🔧 chờ board + đặt mật khẩu admin |
 | F | Chất lượng code, test, bằng chứng nghiệm thu | MISRA/best practice, Giai đoạn 4, năng lượng | `[x]` code · 🔧 chờ đo trên board |
-| G | Dọn repo và tài liệu | Quản lý source | `[ ]` |
+| G | Dọn repo và tài liệu | Quản lý source | `[x]` |
 
 ---
 
@@ -228,10 +228,18 @@ Chi tiết và nghiệm thu: [`security.md`](security.md).
 
 ## GĐ G — Dọn repo và tài liệu
 
-- [ ] Chuyển firmware cũ ở gốc repo (`components/`, `main/`, `CMakeLists.txt`) vào `legacy/`.
-- [ ] Kconfig mặc định bật soil, dry 4095 / wet 2080.
-- [ ] Cập nhật README, `current-progress.md`, `api-contract.md`.
-- [ ] Sửa đường dẫn cũ `C:\Users\Tien An\esp\...` trong tài liệu.
+- [x] Firmware baseline ở gốc repo (`components/`, `main/`, `CMakeLists.txt`, `CMakePresets.json`,
+  `dependencies.lock`) chuyển vào [`legacy/root-firmware/`](../legacy/root-firmware/README.md) bằng `git mv`
+  (giữ lịch sử). Gốc repo không còn project ESP-IDF.
+- [x] Kconfig mặc định bật soil, dry 4095 / wet 2080, `SAEMS_SOIL_DEFAULTS_MEASURED`; cờ hiệu chuẩn mặc định chỉ
+  áp dụng khi mốc NVS trùng mốc đo (mốc giữ chỗ cũ vẫn `uncalibrated`). Script flash ghi đúng các giá trị này
+  thay cho 3000/1200.
+- [x] `run_device.ps1` tự dựng lại `build-internet` khi cache CMake trỏ tới đường dẫn cũ (sau khi chuyển
+  project từ `C:\Users\...\esp` sang `E:\Code\...`, cache cũ sẽ làm `idf.py` báo lỗi).
+- [x] README gốc viết lại theo trạng thái mới; cập nhật `current-progress.md`, README firmware, `api-contract.md`
+  (từ GĐ B–C), `IMPLEMENTATION-REPORT.md`.
+- [x] Đường dẫn cũ `C:\Users\Tien An\esp\SAEMS_esp32_test\...` trong 8 tài liệu đổi sang đường dẫn hiện tại
+  (kèm ghi chú đổi theo nơi clone). Biên bản nghiệm thu cũ giữ nguyên làm lịch sử.
 
 ---
 
@@ -248,3 +256,4 @@ Chi tiết và nghiệm thu: [`security.md`](security.md).
 | 2026-11-24 | GĐ D xong phần code: LED trạng thái WS2812 GPIO48. |
 | 2026-11-24 | GĐ E xong phần code: Wi-Fi WPA2, AP token, BLE passkey, đăng nhập server + app; server triển khai lên Pi (chờ đặt mật khẩu admin). |
 | 2026-11-24 | GĐ F: phân tích tĩnh 3 cổng đạt, host/server test, script Giai đoạn 4, mẫu đo dòng, retention SQLite; server triển khai lên Pi. |
+| 2026-11-24 | GĐ G: firmware cũ vào `legacy/`, soil mặc định 4095/2080, tự sửa build cache sau khi chuyển thư mục, cập nhật tài liệu. Toàn bộ A–G xong phần code; chờ board để nghiệm thu. |

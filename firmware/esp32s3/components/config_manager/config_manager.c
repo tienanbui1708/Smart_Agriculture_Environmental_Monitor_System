@@ -469,9 +469,18 @@ esp_err_t config_manager_init(
         load_i32(handle, "soil_dry", &manager->current.soil_dry_raw);
         load_i32(handle, "soil_wet", &manager->current.soil_wet_raw);
         load_bool(handle, "soil_on", &manager->current.soil_enabled);
-        /* Missing key means uncalibrated; old placeholder endpoints must not
-         * silently become a measured percentage after a firmware upgrade. */
-        load_bool(handle, "soil_cal", &manager->current.soil_calibrated);
+        /* A missing key keeps the build default only while the endpoints
+         * are the build's measured ones; old placeholder endpoints stored
+         * by earlier firmware must not silently become a percentage. */
+        uint8_t stored_calibrated = 0U;
+        if (nvs_get_u8(handle, "soil_cal", &stored_calibrated) == ESP_OK) {
+            manager->current.soil_calibrated = stored_calibrated != 0U;
+        } else {
+            manager->current.soil_calibrated =
+                defaults->soil_calibrated &&
+                (manager->current.soil_dry_raw == defaults->soil_dry_raw) &&
+                (manager->current.soil_wet_raw == defaults->soil_wet_raw);
+        }
         load_bool(handle, "ap_on", &manager->current.ap_enabled);
         load_bool(handle, "ble_on", &manager->current.ble_enabled);
         load_bool(handle, "power_save", &manager->current.power_save_enabled);
