@@ -158,8 +158,10 @@ class ApiTests(unittest.TestCase):
 
         try:
             from fastapi.testclient import TestClient
-        except ImportError:  # pragma: no cover - fastapi missing on this machine
-            self.skipTest("fastapi/httpx not installed")
+        except (ImportError, RuntimeError) as error:
+            # fastapi missing, or starlette without its httpx backend
+            # (RuntimeError at import time) as on the production Pi.
+            self.skipTest(f"TestClient unavailable: {error}")
         import api
 
         self.api = api
