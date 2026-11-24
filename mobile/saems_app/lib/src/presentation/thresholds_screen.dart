@@ -268,12 +268,13 @@ class _ThresholdsScreenState extends ConsumerState<ThresholdsScreen> {
             ? (value) => setState(() => _wateringEnabled = value)
             : null,
         title: const Text('Bật tưới khi đất khô'),
+        subtitle: const Text('Bơm khi độ ẩm đất dưới ngưỡng'),
       ),
       Row(
         children: [
-          field(_wateringThreshold, 'Tưới khi đất dưới (%)', '30'),
+          field(_wateringThreshold, 'Ngưỡng (%)', '30'),
           const SizedBox(width: 12),
-          field(_wateringRuntime, 'Bơm tối đa (giây)', '30'),
+          field(_wateringRuntime, 'Bơm (giây)', '30'),
           const SizedBox(width: 12),
           field(_wateringRestMinutes, 'Nghỉ (phút)', '30'),
         ],
