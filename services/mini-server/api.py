@@ -408,6 +408,48 @@ def get_latest_telemetry(device_id: str):
         connection.close()
 
 
+@app.get("/api/v1/devices/{device_id}/telemetry/hourly")
+def get_hourly_telemetry(
+    device_id: str,
+    limit: int = Query(default=168, ge=1, le=2000),
+    from_hour: Optional[str] = Query(default=None, alias="from"),
+    to_hour: Optional[str] = Query(default=None, alias="to"),
+):
+    """Hourly roll-up (avg/min/max per metric), kept after raw retention.
+
+    from/to compare against the UTC hour key "YYYY-MM-DDTHH".
+    """
+    validate_device_id(device_id)
+    connection = get_connection()
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_hourly'"
+        ).fetchone()
+        if not exists:
+            return {"device_id": device_id, "count": 0, "items": []}
+        conditions = ["device_id = ?"]
+        parameters: list[Any] = [device_id]
+        if from_hour:
+            conditions.append("hour >= ?")
+            parameters.append(from_hour[:13])
+        if to_hour:
+            conditions.append("hour <= ?")
+            parameters.append(to_hour[:13])
+        rows = connection.execute(
+            f"""
+            SELECT * FROM (
+                SELECT * FROM telemetry_hourly WHERE {' AND '.join(conditions)}
+                ORDER BY hour DESC LIMIT ?
+            ) ORDER BY hour ASC
+            """,
+            [*parameters, limit],
+        ).fetchall()
+        return {"device_id": device_id, "count": len(rows),
+                "items": [dict(row) for row in rows]}
+    finally:
+        connection.close()
+
+
 @app.get("/api/v1/devices/{device_id}/telemetry")
 def get_telemetry(
     device_id: str,

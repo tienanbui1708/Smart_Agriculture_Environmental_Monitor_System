@@ -1,5 +1,6 @@
 #include "threshold_monitor.h"
 
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,15 +10,6 @@ typedef struct {
     float minimum;
     float maximum;
 } threshold_range_t;
-
-/* Accepted limit ranges per metric, matching sensor capability. */
-static const threshold_range_t metric_range[THRESHOLD_METRIC_COUNT] = {
-    {-40.0f, 85.0f},     /* DHT20 temperature, degC */
-    {0.0f, 100.0f},      /* relative humidity, % */
-    {0.0f, 100.0f},      /* soil moisture index, % */
-    {0.0f, 100000.0f},   /* BH1750 light, lux */
-    {0.0f, 100.0f},      /* battery, % */
-};
 
 static float hysteresis(threshold_metric_t metric, float limit)
 {
@@ -30,7 +22,7 @@ static float hysteresis(threshold_metric_t metric, float limit)
         return 2.0f;
     case THRESHOLD_METRIC_LIGHT: {
         const float relative = fabsf(limit) * 0.05f;
-        return relative > 10.0f ? relative : 10.0f;
+        return (relative > 10.0f) ? relative : 10.0f;
     }
     default:
         return 0.0f;
@@ -39,7 +31,8 @@ static float hysteresis(threshold_metric_t metric, float limit)
 
 static threshold_metric_t limit_metric(size_t index)
 {
-    return (threshold_metric_t)(index / 2U);
+    const size_t metric = index / 2U;
+    return (threshold_metric_t)metric;
 }
 
 void threshold_limits_clear(threshold_limits_t *limits)
@@ -62,15 +55,23 @@ bool threshold_limits_are_valid(const threshold_limits_t *limits)
         if (!limits->enabled[index]) {
             continue;
         }
+        /* Accepted limit ranges per metric, matching sensor capability. */
+        static const threshold_range_t metric_range[THRESHOLD_METRIC_COUNT] = {
+            {-40.0f, 85.0f},   /* DHT20 temperature, degC */
+            {0.0f, 100.0f},    /* relative humidity, % */
+            {0.0f, 100.0f},    /* soil moisture index, % */
+            {0.0f, 100000.0f}, /* BH1750 light, lux */
+            {0.0f, 100.0f},    /* battery, % */
+        };
         const threshold_range_t range = metric_range[limit_metric(index)];
         const float value = limits->value[index];
-        if (!isfinite(value) || value < range.minimum ||
-            value > range.maximum) {
+        if (!isfinite(value) || (value < range.minimum) ||
+            (value > range.maximum)) {
             return false;
         }
     }
     /* Battery has a single minimum limit (index 8); pairs are 0..7. */
-    for (size_t index = 0U; index + 1U < THRESHOLD_LIMIT_COUNT - 1U;
+    for (size_t index = 0U; (index + 1U) < (THRESHOLD_LIMIT_COUNT - 1U);
          index += 2U) {
         if (limits->enabled[index] && limits->enabled[index + 1U] &&
             !(limits->value[index] < limits->value[index + 1U])) {
@@ -82,19 +83,19 @@ bool threshold_limits_are_valid(const threshold_limits_t *limits)
 
 static bool low_alarm(float value, float limit, float band, bool active)
 {
-    return active ? (value < limit + band) : (value < limit);
+    return active ? (value < (limit + band)) : (value < limit);
 }
 
 static bool high_alarm(float value, float limit, float band, bool active)
 {
-    return active ? (value > limit - band) : (value > limit);
+    return active ? (value > (limit - band)) : (value > limit);
 }
 
 uint16_t threshold_evaluate(const threshold_limits_t *limits,
                             const threshold_readings_t *readings,
                             uint16_t previous_mask)
 {
-    if (limits == NULL || readings == NULL) {
+    if ((limits == NULL) || (readings == NULL)) {
         return 0U;
     }
     uint16_t mask = 0U;
@@ -126,73 +127,77 @@ int threshold_limits_to_json(const threshold_limits_t *limits,
                              char *output,
                              size_t output_size)
 {
-    if (limits == NULL || output == NULL || output_size == 0U) {
+    if ((limits == NULL) || (output == NULL) || (output_size == 0U)) {
         return -1;
     }
     size_t used = 0U;
     for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
-        const char *prefix = index == 0U ? "[" : ",";
+        const char *prefix = (index == 0U) ? "[" : ",";
         int written = limits->enabled[index]
-                          ? snprintf(output + used, output_size - used,
+                          ? snprintf(&output[used], output_size - used,
                                      "%s%.1f", prefix,
                                      (double)limits->value[index])
-                          : snprintf(output + used, output_size - used,
+                          : snprintf(&output[used], output_size - used,
                                      "%snull", prefix);
-        if (written < 0 || (size_t)written >= output_size - used) {
+        if ((written < 0) || ((size_t)written >= (output_size - used))) {
             output[0] = '\0';
             return -1;
         }
         used += (size_t)written;
     }
-    if (used + 1U >= output_size) {
+    if ((used + 1U) >= output_size) {
         output[0] = '\0';
         return -1;
     }
     output[used] = ']';
     output[used + 1U] = '\0';
-    return (int)(used + 1U);
+    const size_t total = used + 1U;
+    return (int)total;
 }
 
-static const char *skip_space(const char *text)
+static const char *threshold_skip_space(const char *text)
 {
-    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
-        text++;
+    size_t index = 0U;
+    while ((text[index] == ' ') || (text[index] == '\t') ||
+           (text[index] == '\r') || (text[index] == '\n')) {
+        index++;
     }
-    return text;
+    return &text[index];
 }
 
 bool threshold_limits_from_json(const char *text, threshold_limits_t *limits)
 {
-    if (text == NULL || limits == NULL) {
+    if ((text == NULL) || (limits == NULL)) {
         return false;
     }
     threshold_limits_t parsed;
     threshold_limits_clear(&parsed);
-    const char *position = skip_space(text);
+    const char *position = threshold_skip_space(text);
     if (*position != '[') {
         return false;
     }
     position++;
     for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
-        position = skip_space(position);
+        position = threshold_skip_space(position);
         if (strncmp(position, "null", 4U) == 0) {
-            position += 4;
+            position = &position[4];
         } else {
             char *end = NULL;
+            errno = 0;
             const float value = strtof(position, &end);
-            if (end == position || !isfinite(value)) {
+            if ((errno != 0) || (end == position) || !isfinite(value)) {
                 return false;
             }
             parsed.value[index] = value;
             parsed.enabled[index] = true;
             position = end;
         }
-        position = skip_space(position);
-        const char expected = index + 1U < THRESHOLD_LIMIT_COUNT ? ',' : ']';
+        position = threshold_skip_space(position);
+        const char expected = ((index + 1U) < THRESHOLD_LIMIT_COUNT) ? ',' : ']';
         if (*position != expected) {
             return false;
         }
-        position++;
+        position = &position[1];
     }
     *limits = parsed;
     return true;

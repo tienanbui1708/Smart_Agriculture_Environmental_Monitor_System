@@ -7,18 +7,17 @@ typedef struct {
     uint8_t percent;
 } curve_point_t;
 
-/* Typical 1S LiPo open-circuit curve, descending voltage. */
-static const curve_point_t lipo_curve[] = {
-    {4200U, 100U}, {4150U, 95U}, {4110U, 90U}, {4080U, 85U},
-    {4020U, 80U},  {3980U, 75U}, {3950U, 70U}, {3910U, 65U},
-    {3870U, 60U},  {3850U, 55U}, {3840U, 50U}, {3820U, 45U},
-    {3800U, 40U},  {3790U, 35U}, {3770U, 30U}, {3750U, 25U},
-    {3730U, 20U},  {3710U, 15U}, {3690U, 10U}, {3610U, 5U},
-    {3270U, 0U},
-};
-
 float battery_percent_from_mv(uint32_t millivolts)
 {
+    /* Typical 1S LiPo open-circuit curve, descending voltage. */
+    static const curve_point_t lipo_curve[] = {
+        {4200U, 100U}, {4150U, 95U}, {4110U, 90U}, {4080U, 85U},
+        {4020U, 80U},  {3980U, 75U}, {3950U, 70U}, {3910U, 65U},
+        {3870U, 60U},  {3850U, 55U}, {3840U, 50U}, {3820U, 45U},
+        {3800U, 40U},  {3790U, 35U}, {3770U, 30U}, {3750U, 25U},
+        {3730U, 20U},  {3710U, 15U}, {3690U, 10U}, {3610U, 5U},
+        {3270U, 0U},
+    };
     const size_t count = sizeof(lipo_curve) / sizeof(lipo_curve[0]);
     if (millivolts >= lipo_curve[0].millivolts) {
         return 100.0f;
@@ -31,11 +30,10 @@ float battery_percent_from_mv(uint32_t millivolts)
         const curve_point_t lower = lipo_curve[index];
         if (millivolts >= lower.millivolts) {
             const float span_mv =
-                (float)(upper.millivolts - lower.millivolts);
-            const float span_pct = (float)(upper.percent - lower.percent);
-            return (float)lower.percent +
-                   ((float)(millivolts - lower.millivolts) * span_pct) /
-                       span_mv;
+                (float)upper.millivolts - (float)lower.millivolts;
+            const float span_pct = (float)upper.percent - (float)lower.percent;
+            const float above_mv = (float)millivolts - (float)lower.millivolts;
+            return (float)lower.percent + ((above_mv * span_pct) / span_mv);
         }
     }
     return 0.0f;
@@ -46,7 +44,7 @@ battery_level_t battery_classify(const battery_policy_t *policy,
                                  float percent,
                                  battery_level_t previous)
 {
-    if (policy == NULL || !valid) {
+    if ((policy == NULL) || !valid) {
         return BATTERY_LEVEL_UNKNOWN;
     }
     const float critical_exit =
@@ -54,14 +52,14 @@ battery_level_t battery_classify(const battery_policy_t *policy,
     const float low_exit =
         (float)policy->low_pct + (float)policy->hysteresis_pct;
 
-    if (percent < (float)policy->critical_pct ||
-        (previous == BATTERY_LEVEL_CRITICAL && percent < critical_exit)) {
+    if ((percent < (float)policy->critical_pct) ||
+        ((previous == BATTERY_LEVEL_CRITICAL) && (percent < critical_exit))) {
         return BATTERY_LEVEL_CRITICAL;
     }
-    if (percent < (float)policy->low_pct ||
-        ((previous == BATTERY_LEVEL_LOW ||
-          previous == BATTERY_LEVEL_CRITICAL) &&
-         percent < low_exit)) {
+    if ((percent < (float)policy->low_pct) ||
+        (((previous == BATTERY_LEVEL_LOW) ||
+          (previous == BATTERY_LEVEL_CRITICAL)) &&
+         (percent < low_exit))) {
         return BATTERY_LEVEL_LOW;
     }
     return BATTERY_LEVEL_NORMAL;

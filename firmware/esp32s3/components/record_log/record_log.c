@@ -45,7 +45,7 @@ static uint32_t next(const record_log_t *log, uint32_t slot)
 
 static uint32_t previous(const record_log_t *log, uint32_t slot)
 {
-    return slot == 0U ? log->slot_count - 1U : slot - 1U;
+    return (slot == 0U) ? (log->slot_count - 1U) : (slot - 1U);
 }
 
 static bool read_header(record_log_t *log, uint32_t slot, slot_header_t *header)
@@ -56,24 +56,24 @@ static bool read_header(record_log_t *log, uint32_t slot, slot_header_t *header)
 
 static bool header_valid(const record_log_t *log, const slot_header_t *header)
 {
-    return header->magic == RECORD_LOG_MAGIC && header->length > 0U &&
-           header->length <= record_log_max_payload(log);
+    return (header->magic == RECORD_LOG_MAGIC) && (header->length > 0U) &&
+           (header->length <= record_log_max_payload(log));
 }
 
 static bool geometry_valid(const record_log_flash_t *flash)
 {
-    return flash != NULL && flash->read != NULL && flash->write != NULL &&
-           flash->erase != NULL && flash->slot_size > RECORD_LOG_HEADER_SIZE &&
-           flash->sector_size >= flash->slot_size &&
-           flash->sector_size % flash->slot_size == 0U &&
-           flash->size % flash->sector_size == 0U &&
-           flash->size / flash->sector_size >= 2U &&
-           flash->slot_size <= 0xFFFFU + RECORD_LOG_HEADER_SIZE;
+    return (flash != NULL) && (flash->read != NULL) && (flash->write != NULL) &&
+           (flash->erase != NULL) && (flash->slot_size > RECORD_LOG_HEADER_SIZE) &&
+           (flash->sector_size >= flash->slot_size) &&
+           ((flash->sector_size % flash->slot_size) == 0U) &&
+           ((flash->size % flash->sector_size) == 0U) &&
+           ((flash->size / flash->sector_size) >= 2U) &&
+           (flash->slot_size <= (0xFFFFU + RECORD_LOG_HEADER_SIZE));
 }
 
 static void attach(record_log_t *log, const record_log_flash_t *flash)
 {
-    memset(log, 0, sizeof(*log));
+    (void)memset(log, 0, sizeof(*log));
     log->flash = *flash;
     log->slot_count = flash->size / flash->slot_size;
     log->slots_per_sector = flash->sector_size / flash->slot_size;
@@ -81,7 +81,7 @@ static void attach(record_log_t *log, const record_log_flash_t *flash)
 
 uint32_t record_log_max_payload(const record_log_t *log)
 {
-    return log == NULL ? 0U : log->flash.slot_size - RECORD_LOG_HEADER_SIZE;
+    return (log == NULL) ? 0U : (log->flash.slot_size - RECORD_LOG_HEADER_SIZE);
 }
 
 static bool slot_blank(record_log_t *log, uint32_t slot)
@@ -108,7 +108,7 @@ static bool slot_blank(record_log_t *log, uint32_t slot)
 record_log_status_t record_log_open(record_log_t *log,
                                     const record_log_flash_t *flash)
 {
-    if (log == NULL || !geometry_valid(flash)) {
+    if ((log == NULL) || !geometry_valid(flash)) {
         return RECORD_LOG_ERR_ARG;
     }
     attach(log, flash);
@@ -125,14 +125,14 @@ record_log_status_t record_log_open(record_log_t *log,
         if (!header_valid(log, &header)) {
             continue;
         }
-        if (!any || header.id > newest_id) {
+        if (!any || (header.id > newest_id)) {
             any = true;
             newest_id = header.id;
             newest_slot = slot;
         }
         if (header.sent == NOT_SENT) {
             log->pending++;
-            if (!any_pending || header.id < oldest_pending_id) {
+            if (!any_pending || (header.id < oldest_pending_id)) {
                 any_pending = true;
                 oldest_pending_id = header.id;
                 log->oldest_slot = slot;
@@ -150,7 +150,7 @@ record_log_status_t record_log_open(record_log_t *log,
     /* A torn write after the newest record leaves a non-blank slot that
      * cannot be programmed again; skip to the next blank slot or to the next
      * sector boundary, which is erased before use anyway. */
-    while (log->next_slot % log->slots_per_sector != 0U &&
+    while (((log->next_slot % log->slots_per_sector) != 0U) &&
            !slot_blank(log, log->next_slot)) {
         log->next_slot = next(log, log->next_slot);
     }
@@ -164,13 +164,13 @@ record_log_status_t record_log_restore(record_log_t *log,
                                        const record_log_flash_t *flash,
                                        const record_log_state_t *state)
 {
-    if (log == NULL || state == NULL || !geometry_valid(flash)) {
+    if ((log == NULL) || (state == NULL) || !geometry_valid(flash)) {
         return RECORD_LOG_ERR_ARG;
     }
     attach(log, flash);
-    if (state->next_slot >= log->slot_count ||
-        state->oldest_slot >= log->slot_count ||
-        state->pending > log->slot_count || state->next_id == 0U) {
+    if ((state->next_slot >= log->slot_count) ||
+        (state->oldest_slot >= log->slot_count) ||
+        (state->pending > log->slot_count) || (state->next_id == 0U)) {
         return RECORD_LOG_ERR_ARG;
     }
     log->next_slot = state->next_slot;
@@ -182,7 +182,7 @@ record_log_status_t record_log_restore(record_log_t *log,
 
 void record_log_save_state(const record_log_t *log, record_log_state_t *state)
 {
-    if (log == NULL || state == NULL) {
+    if ((log == NULL) || (state == NULL)) {
         return;
     }
     state->next_slot = log->next_slot;
@@ -207,7 +207,7 @@ static record_log_status_t recycle_sector(record_log_t *log,
         if (slot == log->oldest_slot) {
             holds_oldest = true;
         }
-        if (header_valid(log, &header) && header.sent == NOT_SENT) {
+        if (header_valid(log, &header) && (header.sent == NOT_SENT)) {
             dropped++;
         }
     }
@@ -223,7 +223,7 @@ static record_log_status_t recycle_sector(record_log_t *log,
     if (dropped_now != NULL) {
         *dropped_now += dropped;
     }
-    if (holds_oldest && log->pending > 0U) {
+    if (holds_oldest && (log->pending > 0U)) {
         /* The rest of the ring after this sector holds the older data. */
         log->oldest_slot = (first_slot + log->slots_per_sector) % log->slot_count;
     }
@@ -238,14 +238,14 @@ record_log_status_t record_log_append(record_log_t *log,
     if (dropped_now != NULL) {
         *dropped_now = 0U;
     }
-    if (log == NULL || payload == NULL || log->slot_count == 0U) {
+    if ((log == NULL) || (payload == NULL) || (log->slot_count == 0U)) {
         return RECORD_LOG_ERR_ARG;
     }
-    if (length == 0U || length > record_log_max_payload(log)) {
+    if ((length == 0U) || (length > record_log_max_payload(log))) {
         return RECORD_LOG_ERR_SIZE;
     }
     const uint32_t slot = log->next_slot;
-    if (slot % log->slots_per_sector == 0U) {
+    if ((slot % log->slots_per_sector) == 0U) {
         const record_log_status_t status =
             recycle_sector(log, slot, dropped_now);
         if (status != RECORD_LOG_OK) {
@@ -264,11 +264,11 @@ record_log_status_t record_log_append(record_log_t *log,
     /* The slot is consumed even if a write below fails part-way. */
     log->next_slot = next(log, slot);
     log->next_id++;
-    if (log->flash.write(log->flash.context, base + RECORD_LOG_HEADER_SIZE,
-                         payload, length) != 0 ||
-        log->flash.write(log->flash.context, base, &header, MAGIC_OFFSET) != 0 ||
-        log->flash.write(log->flash.context, base + MAGIC_OFFSET, &header.magic,
-                         sizeof(header.magic)) != 0) {
+    if ((log->flash.write(log->flash.context, base + RECORD_LOG_HEADER_SIZE,
+                          payload, length) != 0) ||
+        (log->flash.write(log->flash.context, base, &header, MAGIC_OFFSET) != 0) ||
+        (log->flash.write(log->flash.context, base + MAGIC_OFFSET, &header.magic,
+                          sizeof(header.magic)) != 0)) {
         return RECORD_LOG_ERR_FLASH;
     }
     if (log->pending == 0U) {
@@ -281,9 +281,9 @@ record_log_status_t record_log_append(record_log_t *log,
 static record_log_status_t mark_slot_sent(record_log_t *log, uint32_t slot)
 {
     const uint32_t sent = 0U;
-    return log->flash.write(log->flash.context,
-                            slot_offset(log, slot) + SENT_OFFSET, &sent,
-                            sizeof(sent)) == 0
+    return (log->flash.write(log->flash.context,
+                             slot_offset(log, slot) + SENT_OFFSET, &sent,
+                             sizeof(sent)) == 0)
                ? RECORD_LOG_OK
                : RECORD_LOG_ERR_FLASH;
 }
@@ -291,7 +291,7 @@ static record_log_status_t mark_slot_sent(record_log_t *log, uint32_t slot)
 void record_log_pending_begin(const record_log_t *log,
                               record_log_cursor_t *cursor)
 {
-    if (log == NULL || cursor == NULL) {
+    if ((log == NULL) || (cursor == NULL)) {
         return;
     }
     cursor->slot = log->oldest_slot;
@@ -305,14 +305,14 @@ record_log_status_t record_log_pending_next(record_log_t *log,
                                             uint32_t *length,
                                             uint32_t *id)
 {
-    if (log == NULL || cursor == NULL || out == NULL || length == NULL ||
-        id == NULL) {
+    if ((log == NULL) || (cursor == NULL) || (out == NULL) || (length == NULL) ||
+        (id == NULL)) {
         return RECORD_LOG_ERR_ARG;
     }
     /* oldest_slot == next_slot with records pending means a full ring, so
      * the first slot is always visited. */
-    while (log->pending > 0U && cursor->visited < log->slot_count &&
-           (cursor->visited == 0U || cursor->slot != log->next_slot)) {
+    while ((log->pending > 0U) && (cursor->visited < log->slot_count) &&
+           ((cursor->visited == 0U) || (cursor->slot != log->next_slot))) {
         const uint32_t slot = cursor->slot;
         cursor->slot = next(log, slot);
         cursor->visited++;
@@ -320,7 +320,7 @@ record_log_status_t record_log_pending_next(record_log_t *log,
         if (!read_header(log, slot, &header)) {
             return RECORD_LOG_ERR_FLASH;
         }
-        if (!header_valid(log, &header) || header.sent != NOT_SENT) {
+        if (!header_valid(log, &header) || (header.sent != NOT_SENT)) {
             continue;
         }
         if (header.length > out_size) {
@@ -349,18 +349,18 @@ record_log_status_t record_log_pending_next(record_log_t *log,
 record_log_status_t record_log_mark_sent_through(record_log_t *log,
                                                  uint32_t last_id)
 {
-    if (log == NULL || log->slot_count == 0U) {
+    if ((log == NULL) || (log->slot_count == 0U)) {
         return RECORD_LOG_ERR_ARG;
     }
     uint32_t slot = log->oldest_slot;
     uint32_t visited = 0U;
-    while (log->pending > 0U && visited < log->slot_count &&
-           (visited == 0U || slot != log->next_slot)) {
+    while ((log->pending > 0U) && (visited < log->slot_count) &&
+           ((visited == 0U) || (slot != log->next_slot))) {
         slot_header_t header;
         if (!read_header(log, slot, &header)) {
             return RECORD_LOG_ERR_FLASH;
         }
-        if (header_valid(log, &header) && header.sent == NOT_SENT) {
+        if (header_valid(log, &header) && (header.sent == NOT_SENT)) {
             if (header.id > last_id) {
                 break;
             }
@@ -375,7 +375,7 @@ record_log_status_t record_log_mark_sent_through(record_log_t *log,
     if (log->pending == 0U) {
         log->oldest_slot = log->next_slot;
     } else {
-        if (visited > 0U && slot == log->next_slot) {
+        if ((visited > 0U) && (slot == log->next_slot)) {
             /* Counter drifted from flash (should not happen); trust flash. */
             log->pending = 0U;
         }
@@ -391,8 +391,8 @@ record_log_status_t record_log_recent(record_log_t *log,
                                       record_log_visitor_t visitor,
                                       void *context)
 {
-    if (log == NULL || buffer == NULL || visitor == NULL ||
-        log->slot_count == 0U) {
+    if ((log == NULL) || (buffer == NULL) || (visitor == NULL) ||
+        (log->slot_count == 0U)) {
         return RECORD_LOG_ERR_ARG;
     }
     /* Walk back from the newest slot to find where the window starts. */
@@ -400,24 +400,25 @@ record_log_status_t record_log_recent(record_log_t *log,
     uint32_t found = 0U;
     uint32_t slot = log->next_slot;
     for (uint32_t visited = 0U;
-         visited < log->slot_count && found < max_records; visited++) {
+         (visited < log->slot_count) && (found < max_records); visited++) {
         slot = previous(log, slot);
         slot_header_t header;
         if (!read_header(log, slot, &header)) {
             return RECORD_LOG_ERR_FLASH;
         }
-        if (header_valid(log, &header) && header.id < log->next_id) {
+        if (header_valid(log, &header) && (header.id < log->next_id)) {
             found++;
             start = slot;
         }
     }
     slot = start;
-    for (uint32_t emitted = 0U; emitted < found;) {
+    uint32_t emitted = 0U;
+    while (emitted < found) {
         slot_header_t header;
         if (!read_header(log, slot, &header)) {
             return RECORD_LOG_ERR_FLASH;
         }
-        if (header_valid(log, &header) && header.id < log->next_id) {
+        if (header_valid(log, &header) && (header.id < log->next_id)) {
             emitted++;
             if (header.length > buffer_size) {
                 return RECORD_LOG_ERR_SIZE;
@@ -427,7 +428,7 @@ record_log_status_t record_log_recent(record_log_t *log,
                                 buffer, header.length) != 0) {
                 return RECORD_LOG_ERR_FLASH;
             }
-            if (record_log_crc32(buffer, header.length) == header.crc &&
+            if ((record_log_crc32(buffer, header.length) == header.crc) &&
                 !visitor(context, buffer, header.length, header.id,
                          header.sent != NOT_SENT)) {
                 break;

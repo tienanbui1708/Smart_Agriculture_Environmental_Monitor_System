@@ -76,8 +76,11 @@ void sync_manager_kick(sync_manager_t *manager)
 
     const char *payload = records;
     if (count > 1U) {
-        memcpy(manager->buffer, BATCH_PREFIX, prefix_length);
-        strcat(manager->buffer, BATCH_SUFFIX);
+        /* read_pending left room for the suffix (bounded above). */
+        const size_t records_length = strlen(records);
+        (void)memcpy(manager->buffer, BATCH_PREFIX, prefix_length);
+        (void)memcpy(&records[records_length], BATCH_SUFFIX,
+                     sizeof(BATCH_SUFFIX));
         payload = manager->buffer;
     }
     int message_id = mqtt_manager_publish(manager->mqtt, payload);

@@ -234,6 +234,9 @@ static esp_err_t open_flash_log(storage_manager_t *manager)
 {
     const esp_partition_t *partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA,
+        /* Custom data subtypes 0x40..0xFE are valid partition subtypes even
+         * though the enum does not name them. */
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
         (esp_partition_subtype_t)SAEMS_STORAGE_PARTITION_SUBTYPE,
         SAEMS_STORAGE_PARTITION_LABEL);
     if (partition == NULL) {

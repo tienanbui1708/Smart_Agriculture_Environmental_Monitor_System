@@ -4,7 +4,7 @@
 
 status_led_state_t status_led_select(const status_led_inputs_t *inputs)
 {
-    if (inputs == NULL || inputs->sleeping) {
+    if ((inputs == NULL) || inputs->sleeping) {
         return STATUS_LED_OFF;
     }
     if (inputs->booting) {

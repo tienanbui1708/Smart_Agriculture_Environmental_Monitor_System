@@ -125,6 +125,16 @@ Lệnh bơm mẫu:
 API trả `queued` chỉ có nghĩa broker đã nhận lệnh. Trạng thái relay phải được
 xác nhận bằng telemetry tiếp theo; firmware vẫn chịu trách nhiệm auto-off.
 
+## Lưu trữ, gộp theo giờ và retention
+
+Ingestor tự chạy `retention.py` lúc khởi động và mỗi 6 giờ:
+
+- gộp `telemetry_hourly`, đọc qua `GET /api/v1/devices/{id}/telemetry/hourly`;
+- xóa bản ghi thô cũ hơn `SAEMS_RAW_RETENTION_DAYS` (mặc định 180) sau khi đã gộp;
+- xóa cảnh báo đã đóng cũ hơn `SAEMS_ALERT_RETENTION_DAYS` (mặc định 365).
+
+Lý do chọn SQLite: [`docs/data-storage.md`](../../docs/data-storage.md).
+
 ## Cấu hình ngưỡng và chu kỳ
 
 `PUT /api/v1/devices/farm-01/configuration` (chỉ gửi phần muốn quản lý; `null`

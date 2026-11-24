@@ -29,7 +29,7 @@ Ký hiệu: `[x]` xong · `[~]` đang làm · `[ ]` chưa làm · 🔧 cần ph�
 | C | Lưu offline bằng ring buffer trên flash | Offline Resilience "không mất dữ liệu" | `[x]` code · 🔧 chờ board |
 | D | LED trạng thái WS2812 | "LED chỉ thị mạng/server" | `[x]` code · 🔧 chờ board |
 | E | Bảo mật và đăng nhập | Bảo mật cơ bản, App "đăng nhập" | `[x]` code · 🔧 chờ board + đặt mật khẩu admin |
-| F | Chất lượng code, test, bằng chứng nghiệm thu | MISRA/best practice, Giai đoạn 4, năng lượng | `[ ]` |
+| F | Chất lượng code, test, bằng chứng nghiệm thu | MISRA/best practice, Giai đoạn 4, năng lượng | `[x]` code · 🔧 chờ đo trên board |
 | G | Dọn repo và tài liệu | Quản lý source | `[ ]` |
 
 ---
@@ -210,12 +210,21 @@ Chi tiết và nghiệm thu: [`security.md`](security.md).
 
 ## GĐ F — Chất lượng code và bằng chứng
 
-- [ ] Script `cppcheck --addon=misra` + clang-tidy, sửa vi phạm chính, ghi deviation.
-- [ ] Host test cho `data_manager`, ring buffer, ngưỡng, pin, logic bơm.
-- [ ] Test server: cấu hình, cảnh báo, nhận lô.
-- [ ] Script tự động bài test Giai đoạn 4, xuất báo cáo kiểm tra liên tục `seq`. 🔧
-- [ ] Mẫu báo cáo đo dòng Direct/Light/Deep Sleep. 🔧
-- [ ] SQLite: index, retention, gộp theo giờ; ghi lý do chọn SQLite thay time-series DB.
+- [x] `firmware/esp32s3/tools/static_analysis.py`: cppcheck 2.14 + addon MISRA C:2012 và clang-tidy
+  (esp-clang 20, `bugprone/cert/clang-analyzer`). Ba cổng đều 0: MISRA trên 5 module C thuần (ngoài
+  deviation D1–D4), cppcheck và clang-tidy trên toàn firmware. Đã sửa 22.8, 17.7, 14.2, 10.8, 8.9,
+  5.9, 17.8, 18.4, 12.1 (khoảng 70 chỗ), `strcat`. Deviation và lý do: [`misra-deviations.md`](misra-deviations.md);
+  báo cáo: [`static-analysis-report.md`](static-analysis-report.md).
+- [x] Host test: `tests/run_host_tests.py` chạy 5 bộ (ngưỡng 29, bơm/pin 269, ring buffer 36.915,
+  LED 30, `data_manager` 29 + kiểm tra JSON bằng parser thật; telemetry tệ nhất 652/768 byte).
+- [x] Test server 43 (cấu hình, cảnh báo, nhận lô, đăng nhập, retention).
+- [x] `scripts/acceptance/stage4_resilience.py`: bài test Giai đoạn 4 có hướng dẫn từng bước (tắt/bật broker
+  thủ công hoặc qua SSH, bằng chứng AP, xác nhận điện thoại), báo cáo liên tục `seq` theo `boot_id`, kết luận
+  ĐẠT/KHÔNG ĐẠT; 5 unit test. Phân tích dữ liệu thật trên Pi: 3.532 bản ghi, 37 boot, 0 seq thiếu. 🔧 chạy lại khi có board.
+- [x] Mẫu báo cáo đo dòng [`energy-measurement.md`](energy-measurement.md) + `energy_estimate.py`. 🔧 cần số đo.
+- [x] SQLite: index `(device_id, received_at)`, `(device_id, timestamp)`; bảng `telemetry_hourly` (gộp lại
+  cả giờ có dữ liệu gửi bù muộn); retention thô 180 ngày (chỉ sau khi gộp), cảnh báo 365 ngày; API
+  `/telemetry/hourly`; lý do chọn SQLite: [`data-storage.md`](data-storage.md).
 
 ## GĐ G — Dọn repo và tài liệu
 
@@ -238,3 +247,4 @@ Chi tiết và nghiệm thu: [`security.md`](security.md).
 | 2026-11-24 | GĐ C xong phần code: vòng ghi flash 6 MB, gửi bù theo lô, server nhận lô; server triển khai lên Pi. |
 | 2026-11-24 | GĐ D xong phần code: LED trạng thái WS2812 GPIO48. |
 | 2026-11-24 | GĐ E xong phần code: Wi-Fi WPA2, AP token, BLE passkey, đăng nhập server + app; server triển khai lên Pi (chờ đặt mật khẩu admin). |
+| 2026-11-24 | GĐ F: phân tích tĩnh 3 cổng đạt, host/server test, script Giai đoạn 4, mẫu đo dòng, retention SQLite; server triển khai lên Pi. |

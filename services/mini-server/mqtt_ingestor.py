@@ -12,6 +12,7 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 import alert_engine
+import retention
 from mqtt_security import configure_mqtt_tls
 from notifier import NullNotifier, notifier_from_env
 from schema import ensure_schema
@@ -28,6 +29,7 @@ MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 MQTT_TOPIC = "saems/+/telemetry"
 MQTT_CLIENT_ID = "saems-mini-server-ingestor"
 OFFLINE_CHECK_SECONDS = 30
+MAINTENANCE_SECONDS = 6 * 3600
 
 # Replaced by notifier_from_env() in main(); tests may inject their own.
 notifier = NullNotifier()
@@ -120,6 +122,7 @@ def initialize_database() -> None:
             """
         )
         ensure_schema(connection)
+        retention.ensure_schema(connection)
         connection.commit()
 
 
@@ -280,6 +283,19 @@ def offline_monitor(stop: threading.Event) -> None:
             logging.exception("Offline check failed")
 
 
+def maintenance_loop(stop: threading.Event) -> None:
+    """Hourly roll-up and retention; first run right after start."""
+    while True:
+        try:
+            stats = retention.run_maintenance(DB_PATH)
+            logging.info("Maintenance: %d hours rolled up, %d raw rows and %d alerts deleted",
+                         stats["hours"], stats["raw_deleted"], stats["alerts_deleted"])
+        except sqlite3.Error:
+            logging.exception("Maintenance failed")
+        if stop.wait(MAINTENANCE_SECONDS):
+            return
+
+
 def create_mqtt_client():
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
@@ -309,6 +325,10 @@ def main() -> None:
     threading.Thread(
         target=offline_monitor, args=(threading.Event(),),
         name="offline-monitor", daemon=True,
+    ).start()
+    threading.Thread(
+        target=maintenance_loop, args=(threading.Event(),),
+        name="maintenance", daemon=True,
     ).start()
     client = create_mqtt_client()
     client.connect_async(MQTT_HOST, MQTT_PORT, keepalive=60)

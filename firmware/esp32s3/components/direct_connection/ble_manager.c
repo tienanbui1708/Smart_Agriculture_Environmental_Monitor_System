@@ -100,6 +100,8 @@ static int consume_value(
     }
     char value[BLE_JSON_SIZE];
     uint16_t length = 0;
+    /* OS_MBUF_PKTLEN is a NimBLE macro that casts through void *. */
+    // NOLINTNEXTLINE(bugprone-casting-through-void)
     if (OS_MBUF_PKTLEN(ctxt->om) >= sizeof(value) ||
         ble_hs_mbuf_to_flat(
             ctxt->om, value, sizeof(value) - 1, &length) != 0) {

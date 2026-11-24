@@ -1,0 +1,10 @@
+# MISRA C:2012 deviations for the pure-C modules (gate 1 of static_analysis.py).
+# Rationale and scope for each entry: docs/misra-deviations.md.
+# D1 Rule 15.5 (advisory): guard-clause early returns.
+misra-c2012-15.5
+# D2 Rule 8.7 (advisory): public module API analysed without its callers.
+misra-c2012-8.7
+# D3 Rule 21.6 (required): bounded snprintf for JSON output.
+misra-c2012-21.6
+# D4 Rule 11.5 (advisory): byte-oriented void* APIs (CRC, flash callbacks).
+misra-c2012-11.5
