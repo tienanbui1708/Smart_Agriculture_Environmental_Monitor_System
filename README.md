@@ -15,6 +15,7 @@ firmware/esp32s3/       Firmware ESP-IDF 6.0.3 cho ESP32-S3-DevKitC N16R8
 services/mini-server/   MQTT ingestor, SQLite, REST API, đăng nhập, cảnh báo, dashboard
 mobile/saems_app/       Ứng dụng Flutter (server, BLE, Wi-Fi AP)
 scripts/windows/        Build/flash/monitor, chạy server và app trên Windows
+scripts/linux/          Build/flash/đọc log thiết bị trên Linux
 scripts/acceptance/     Bài test Giai đoạn 4 và tính năng lượng
 docs/                   Hợp đồng API, giao thức, thiết kế, báo cáo kiểm thử
 legacy/root-firmware/   Firmware baseline cũ của nhóm (lưu trữ, không bảo trì)
@@ -50,6 +51,15 @@ Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_
 ```
 
 Chi tiết: [scripts/windows/RUN-DEMO.md](scripts/windows/RUN-DEMO.md).
+
+Trên Linux:
+
+```bash
+scripts/linux/run_device.sh flash -p /dev/ttyACM0   # build + flash (giữ NVS)
+scripts/linux/run_device.sh read --seconds 60       # đọc log thiết bị
+```
+
+Cài ESP-IDF và chuẩn bị `.local/`: [scripts/linux/README.md](scripts/linux/README.md).
 
 ## Kiểm thử
 
