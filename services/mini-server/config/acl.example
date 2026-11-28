@@ -1,9 +1,13 @@
-# Device account: publish only its telemetry and optionally receive commands.
+# Device account: publish only its telemetry, receive commands and the
+# retained server configuration.
 user saems_esp32
 topic write saems/farm-01/telemetry
 topic read saems/farm-01/commands
+topic read saems/farm-01/config
 
-# Server account: ingest and monitor telemetry from all farm devices.
+# Server account: ingest telemetry, send commands and publish configuration
+# (retained) for all farm devices.
 user saems_server
 topic read saems/+/telemetry
 topic write saems/+/commands
+topic write saems/+/config

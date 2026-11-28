@@ -36,6 +36,8 @@ class SettingsStore {
   static const _sourceKey = 'data_source';
   static const _tokenKey = 'api_token';
   static const _bleKey = 'ble_remote_id';
+  static const _sessionUserKey = 'session_user';
+  static const _deviceTokenKey = 'device_token';
 
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
@@ -71,4 +73,24 @@ class SettingsStore {
   Future<void> saveToken(String? token) => token == null || token.isEmpty
       ? _secureStorage.delete(key: _tokenKey)
       : _secureStorage.write(key: _tokenKey, value: token);
+
+  /// User name of the server login, or null when a raw API token is used.
+  Future<String?> readSessionUser() => _secureStorage.read(key: _sessionUserKey);
+
+  Future<void> saveSession(String token, String username) async {
+    await _secureStorage.write(key: _tokenKey, value: token);
+    await _secureStorage.write(key: _sessionUserKey, value: username);
+  }
+
+  Future<void> clearSession() async {
+    await _secureStorage.delete(key: _tokenKey);
+    await _secureStorage.delete(key: _sessionUserKey);
+  }
+
+  /// Bearer token of the device AP REST API (default: AP Wi-Fi password).
+  Future<String?> readDeviceToken() => _secureStorage.read(key: _deviceTokenKey);
+
+  Future<void> saveDeviceToken(String? token) => token == null || token.isEmpty
+      ? _secureStorage.delete(key: _deviceTokenKey)
+      : _secureStorage.write(key: _deviceTokenKey, value: token);
 }

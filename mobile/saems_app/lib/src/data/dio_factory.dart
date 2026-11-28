@@ -37,9 +37,12 @@ Never mapDioError(DioException error) {
     );
   }
   if (status == 401 || status == 403) {
+    final local = error.requestOptions.baseUrl.contains('192.168.4.1');
     throw AppException(
       AppErrorKind.unauthorized,
-      'Không có quyền truy cập server.',
+      local
+          ? 'Thiết bị từ chối: kiểm tra mã thiết bị (mật khẩu AP) trong Cài đặt.'
+          : 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ. Hãy đăng nhập lại.',
       statusCode: status,
     );
   }

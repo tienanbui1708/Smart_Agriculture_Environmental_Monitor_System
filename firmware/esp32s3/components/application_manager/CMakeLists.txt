@@ -2,17 +2,22 @@ idf_component_register(
     SRCS "application_manager.c"
     INCLUDE_DIRS "include"
     REQUIRES
+        battery_monitor
         config_manager
         data_manager
         direct_connection
         esp_app_format
+        esp_hw_support
         esp_timer
+        irrigation
         mqtt_manager
         network_manager
         nvs_flash
         power_manager
         relay
         sensor_manager
+        status_led
         storage_manager
         sync_manager
+        threshold_monitor
 )

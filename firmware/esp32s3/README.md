@@ -21,9 +21,32 @@ cùng một binary. Không build project `hello_world` ở thư mục gốc repo
 | Relay CH1 | IN1 | GPIO10 | Điều khiển bơm |
 | Relay CH2 | IN2 | GPIO11 | Kênh dự phòng |
 | Relay | DC+/DC- | 5Vin/GND chung | Nguồn cuộn relay |
+| LED RGB WS2812 (onboard) | DIN | GPIO48 | LED trạng thái (`SAEMS_STATUS_LED_GPIO`, board v1.1 dùng GPIO38) |
+| Pin LiPo 1S (tùy chọn) | + qua cầu chia 100k/100k | GPIO6 | ADC1_CH5, đo mức pin (`SAEMS_BATTERY_SOURCE_ADC`) |
 
 BH1750 là cảm biến I²C, không phải ADC. Không đưa mức 5 V vào GPIO, SDA hoặc SCL
 của ESP32-S3. Khi chưa nghiệm thu relay, phải ngắt tải bơm trước khi flash/reset.
+Nối dây máy bơm, cầu chia áp pin và kịch bản tưới tự động/pin yếu: xem
+[`docs/pump-battery.md`](../../docs/pump-battery.md).
+
+### LED trạng thái
+
+LED RGB onboard (WS2812, độ sáng mặc định 16/255) cho biết trạng thái mà không cần
+mở app hay log. Thứ tự ưu tiên từ trên xuống:
+
+| Màu | Ý nghĩa |
+|---|---|
+| Tắt | Sắp vào Deep Sleep (WS2812 giữ màu nếu không tắt), hoặc LED bị tắt trong menuconfig |
+| Trắng | Đang khởi động, chưa lấy mẫu lần đầu |
+| Đỏ | Cảm biến lỗi (DHT20/BH1750 không trả lời, hoặc soil báo lỗi) |
+| Tím | Đã nối server và đang gửi bù dữ liệu offline |
+| Xanh dương | Điện thoại đang kết nối BLE hoặc Wi-Fi AP |
+| Xanh lá | Đã nối server MQTT, không còn dữ liệu chờ |
+| Vàng nhấp nháy | Mất Wi-Fi hoặc server; dữ liệu vẫn lưu offline |
+
+Nhấp nháy và cập nhật mỗi 0,5 s chỉ chạy ở chế độ Direct. Ở Light Sleep/Battery,
+LED chỉ đổi màu khi có sự kiện và vàng hiện sáng liên tục, để CPU được ngủ. Khi đo
+dòng ngủ, tắt `SAEMS_STATUS_LED_ENABLED`: WS2812 vẫn tốn khoảng 1 mA kể cả khi tối.
 
 ## Kiến trúc firmware
 
@@ -60,11 +83,16 @@ thiết bị vẫn lấy mẫu và giữ bản ghi trong FIFO NVS. Khi MQTT kế
 - LM393 trả `soil_raw`, `soil_digital` và chỉ trả `soil_moisture_pct` sau khi
   đã lưu hai mốc ADC khô/ướt thực tế.
 - Cảm biến lỗi hoặc chưa cấu hình trả `null`; firmware không tạo dữ liệu giả.
-- `battery_pct` hiện là `null` vì chưa có mạch đo pin.
+- `battery_pct` là `null` khi `SAEMS_BATTERY_SOURCE=none` (cắm USB); xem
+  [pump-battery.md](../../docs/pump-battery.md) cho nguồn `adc`/`simulated`.
 - `data_mode` của firmware thật luôn là `real`.
 
-Mốc LM393 đang dùng trong đợt demo là `dry=4095`, `wet=2080`. Đây là mốc của
-que/mẫu đất đã đo, không phải hằng số áp dụng cho mọi cảm biến hoặc loại đất.
+Mốc LM393 đo trên que của nhóm là `dry=4095`, `wet=2080`. Đây cũng là mặc định
+Kconfig (`SAEMS_SOIL_DRY_RAW`, `SAEMS_SOIL_WET_RAW`, `SAEMS_SOIL_DEFAULTS_MEASURED=y`):
+board mới chưa lưu cờ hiệu chuẩn sẽ trả phần trăm luôn. Mốc lưu trong NVS (qua
+`soil_calibration.ps1`) luôn được ưu tiên. Board có mốc cũ khác các giá trị này (ví
+dụ mốc giữ chỗ 3000/1200) vẫn ở trạng thái `uncalibrated` cho tới khi xác nhận lại.
+Dùng que hoặc loại đất khác thì phải hiệu chuẩn lại.
 
 ## BLE, Wi-Fi AP và Power Manager
 
@@ -91,7 +119,7 @@ Tất cả lệnh dưới đây chạy từ **thư mục gốc repository**, kh�
 `firmware/esp32s3`:
 
 ```powershell
-Set-Location 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+Set-Location 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 
 # Chỉ build
 .\scripts\windows\run_device.cmd -Action Build -PowerProfile Direct

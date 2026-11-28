@@ -18,7 +18,9 @@ typedef struct {
     esp_mqtt_client_handle_t client;
     char telemetry_topic[96];
     char command_topic[96];
+    char config_topic[96];
     mqtt_manager_command_callback_t command_callback;
+    mqtt_manager_command_callback_t config_callback;
     mqtt_manager_published_callback_t published_callback;
     mqtt_manager_connection_callback_t connection_callback;
     void *callback_context;
@@ -30,6 +32,7 @@ esp_err_t mqtt_manager_init(
     mqtt_manager_t *manager,
     const saems_config_t *config,
     mqtt_manager_command_callback_t command_callback,
+    mqtt_manager_command_callback_t config_callback,
     mqtt_manager_published_callback_t published_callback,
     mqtt_manager_connection_callback_t connection_callback,
     void *callback_context);

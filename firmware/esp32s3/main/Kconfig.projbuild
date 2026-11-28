@@ -36,6 +36,17 @@ config SAEMS_BLE_ENABLED
         Exposes the SAEMS GATT service used by the mobile application for
         telemetry notifications, configuration and pump commands.
 
+config SAEMS_BLE_PASSKEY_PAIRING
+    bool "Require BLE passkey pairing (MITM protected)"
+    default y
+    depends on SAEMS_BLE_ENABLED
+    help
+        Telemetry, config and command characteristics need an authenticated
+        LE Secure Connections link. Each device generates a 6-digit passkey
+        once (NVS), prints it on the serial log at boot, and the phone asks
+        the user to type it. Disable only to fall back to Just Works.
+        Phones bonded with older firmware must pair again.
+
 config SAEMS_AP_ENABLED
     bool "Enable Wi-Fi Access Point and local REST API"
     default n
@@ -127,10 +138,10 @@ config SAEMS_RELAY_MAX_ON_SECONDS
 
 config SAEMS_SOIL_SENSOR_ENABLED
     bool "Enable LM393 soil moisture sensor"
-    default n
+    default y
     help
-        Enable only after attaching the probe. Percentage output also needs
-        measured endpoints and soil_calibrated=true in the device config.
+        LM393 probe on GPIO4 (AO) / GPIO5 (DO), VCC 3.3 V. Percentage output
+        needs measured dry/wet endpoints (see SAEMS_SOIL_DEFAULTS_MEASURED).
 
 config SAEMS_SOIL_RAW_READOUT_ENABLED
     bool "Read LM393 raw ADC for calibration even when soil is disabled in NVS"
@@ -143,13 +154,136 @@ config SAEMS_SOIL_RAW_READOUT_ENABLED
 config SAEMS_SOIL_DRY_RAW
     int "LM393 dry ADC value"
     range 0 4095
-    default 3000
+    default 4095
     depends on SAEMS_SOIL_SENSOR_ENABLED
+    help
+        Measured on the project probe in dry air (2026-10, soil_calibration.ps1).
 
 config SAEMS_SOIL_WET_RAW
     int "LM393 wet ADC value"
     range 0 4095
-    default 1200
+    default 2080
     depends on SAEMS_SOIL_SENSOR_ENABLED
+    help
+        Measured on the project probe in water (2026-10).
+
+config SAEMS_SOIL_DEFAULTS_MEASURED
+    bool "Dry/wet defaults above are measured on this probe"
+    default y
+    depends on SAEMS_SOIL_SENSOR_ENABLED
+    help
+        A device with no stored calibration flag reports percentages with
+        these endpoints. NVS endpoints that differ from them (for example
+        old placeholders) stay uncalibrated until confirmed with
+        soil_calibration.ps1. Disable for a different probe type.
+
+config SAEMS_PUMP_SIMULATED
+    bool "Pump is simulated (no pump or pump supply attached)"
+    default y
+    help
+        Automatic watering and pump commands still switch relay channel 1
+        and report pump_state/pump_reason, but the log marks every run as
+        simulated. Disable once a real pump and its supply are wired.
+
+choice SAEMS_BATTERY_SOURCE
+    prompt "Battery level source"
+    default SAEMS_BATTERY_SOURCE_NONE
+    help
+        none: USB powered, battery_pct is null.
+        adc: 1S LiPo through a resistor divider on an ADC1 pin.
+        simulated: demo level that drains each sample; set it with the
+        {"command":"battery_sim","pct":N} command over BLE/AP/MQTT.
+
+config SAEMS_BATTERY_SOURCE_NONE
+    bool "None (USB powered)"
+
+config SAEMS_BATTERY_SOURCE_ADC
+    bool "ADC with resistor divider"
+
+config SAEMS_BATTERY_SOURCE_SIMULATED
+    bool "Simulated"
+
+endchoice
+
+config SAEMS_BATTERY_ADC_GPIO
+    int "Battery divider ADC GPIO (ADC1 only)"
+    range 1 10
+    default 6
+    depends on SAEMS_BATTERY_SOURCE_ADC
+    help
+        GPIO6 is ADC1_CH5 on ESP32-S3. ADC2 cannot be used while Wi-Fi runs.
+
+config SAEMS_BATTERY_DIVIDER_X100
+    int "Divider ratio x100 (battery voltage / pin voltage)"
+    range 100 1000
+    default 200
+    depends on SAEMS_BATTERY_SOURCE_ADC
+    help
+        200 for two equal resistors (e.g. 100k/100k), which keeps 4.2 V
+        at 2.1 V on the pin, inside the 12 dB attenuation range.
+
+config SAEMS_BATTERY_SIM_START_PCT
+    int "Simulated battery level after power-on (%)"
+    range 0 100
+    default 80
+    depends on SAEMS_BATTERY_SOURCE_SIMULATED
+
+config SAEMS_BATTERY_SIM_DRAIN_X10
+    int "Simulated drain per sample (tenths of a percent)"
+    range 0 100
+    default 5
+    depends on SAEMS_BATTERY_SOURCE_SIMULATED
+
+config SAEMS_BATTERY_LOW_PCT
+    int "Low battery level (%)"
+    range 5 60
+    default 20
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+    help
+        Below this level the device switches to Battery (Deep Sleep) mode
+        and samples at least every SAEMS_BATTERY_LOW_INTERVAL_SECONDS.
+
+config SAEMS_BATTERY_CRITICAL_PCT
+    int "Critical battery level (%)"
+    range 1 30
+    default 5
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+    help
+        Below this level the pump is stopped and blocked, and the device
+        sleeps for SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS between samples.
+
+config SAEMS_BATTERY_LOW_INTERVAL_SECONDS
+    int "Minimum sample interval on low battery (s)"
+    range 10 3600
+    default 600
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+
+config SAEMS_BATTERY_CRITICAL_INTERVAL_SECONDS
+    int "Sample interval on critical battery (s)"
+    range 60 86400
+    default 3600
+    depends on !SAEMS_BATTERY_SOURCE_NONE
+
+config SAEMS_STATUS_LED_ENABLED
+    bool "Show device status on the onboard WS2812 RGB LED"
+    default y
+    help
+        Green online, blinking yellow server unreachable, blue phone
+        connected over BLE/AP, red sensor error, purple sending offline
+        backlog, white booting, off before Deep Sleep.
+
+config SAEMS_STATUS_LED_GPIO
+    int "WS2812 data GPIO"
+    range 0 48
+    default 48
+    depends on SAEMS_STATUS_LED_ENABLED
+    help
+        ESP32-S3-DevKitC-1 v1.0 uses GPIO48; v1.1 boards use GPIO38.
+
+config SAEMS_STATUS_LED_BRIGHTNESS
+    int "Status LED brightness (1-255)"
+    range 1 255
+    default 16
+    depends on SAEMS_STATUS_LED_ENABLED
 
 endmenu

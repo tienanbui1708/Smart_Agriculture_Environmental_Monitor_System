@@ -4,17 +4,23 @@ import secrets
 import base64
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 import sqlite3
 from uuid import uuid4
 
 import paho.mqtt.client as mqtt
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
+
+import alert_engine
+import auth
+import device_config
 from mqtt_security import configure_mqtt_tls
+from notifier import notifier_from_env
+from schema import ensure_schema
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,6 +37,19 @@ API_ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN", "")
 API_PUBLIC_MODE = os.getenv("API_PUBLIC_MODE", "false").lower() in ("1", "true", "yes")
 if API_PUBLIC_MODE and len(API_ACCESS_TOKEN) < 32:
     raise RuntimeError("Public API requires an API_ACCESS_TOKEN of at least 32 characters")
+# User login (auth.py). Without a password hash only the API token works.
+ADMIN_USER = os.getenv("SAEMS_ADMIN_USER", "admin")
+ADMIN_PASSWORD_HASH = os.getenv("SAEMS_ADMIN_PASSWORD_HASH", "")
+SESSION_TTL_SECONDS = int(os.getenv("SAEMS_SESSION_TTL_HOURS", "720")) * 3600
+PUBLIC_PATHS = {"/health", "/auth/login"}
+sessions = auth.SessionStore(BASE_DIR / "data" / "auth.db", SESSION_TTL_SECONDS)
+login_throttle = auth.LoginThrottle()
+basic_cache = auth.CredentialCache()
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class PumpCommand(BaseModel):
@@ -41,45 +60,122 @@ class PumpCommand(BaseModel):
         le=86400,
     )
 
-app = FastAPI(title="SAEMS Mini Server API", version="0.3.0")
+
+class BatterySimCommand(BaseModel):
+    """Set the simulated battery level (firmware SAEMS_BATTERY_SOURCE_SIMULATED)."""
+    pct: float = Field(ge=0, le=100)
+
+
+notifier = notifier_from_env()
+
+app = FastAPI(title="SAEMS Mini Server API", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[value for value in os.getenv("CORS_ORIGINS", "").split(",") if value],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
 
-@app.middleware("http")
-async def authenticate(request: Request, call_next):
-    """Bearer for mobile/API clients, HTTP Basic for the same-origin dashboard."""
-    if request.url.path == "/health" or request.method == "OPTIONS" or not API_ACCESS_TOKEN:
-        return await call_next(request)
-    authorization = request.headers.get("authorization", "")
+def auth_enabled() -> bool:
+    return bool(API_ACCESS_TOKEN or ADMIN_PASSWORD_HASH)
+
+
+def check_admin_password(username: str, password: str) -> bool:
+    if not ADMIN_PASSWORD_HASH or not secrets.compare_digest(
+            username.encode(), ADMIN_USER.encode()):
+        return False
+    return auth.verify_password(password, ADMIN_PASSWORD_HASH)
+
+
+def identify(authorization: str) -> Optional[tuple[str, str]]:
+    """Return (username, method) for valid credentials, else None.
+
+    Bearer: the API access token (scripts, older app builds) or a session
+    token from /auth/login. Basic (dashboard): "saems" + API token, or the
+    admin user + password.
+    """
     scheme, _, value = authorization.partition(" ")
-    candidate = ""
-    if scheme.lower() == "bearer":
-        candidate = value
-    elif scheme.lower() == "basic":
+    scheme = scheme.lower()
+    if scheme == "bearer" and value:
+        if API_ACCESS_TOKEN and secrets.compare_digest(
+                value.encode(), API_ACCESS_TOKEN.encode()):
+            return "api-token", "api_token"
+        username = sessions.lookup(value)
+        return (username, "session") if username else None
+    if scheme == "basic":
         try:
             username, separator, password = base64.b64decode(
                 value, validate=True
             ).decode("utf-8").partition(":")
-            if username == "saems" and separator:
-                candidate = password
         except (ValueError, UnicodeError):
-            pass
-    if not candidate or not secrets.compare_digest(candidate.encode(), API_ACCESS_TOKEN.encode()):
+            return None
+        if not separator:
+            return None
+        if (username == "saems" and API_ACCESS_TOKEN and
+                secrets.compare_digest(password.encode(), API_ACCESS_TOKEN.encode())):
+            return "api-token", "basic"
+        if basic_cache.contains(username, password):
+            return username, "basic"
+        if check_admin_password(username, password):
+            basic_cache.add(username, password)
+            return username, "basic"
+    return None
+
+
+@app.middleware("http")
+async def authenticate(request: Request, call_next):
+    if (request.url.path in PUBLIC_PATHS or request.method == "OPTIONS" or
+            not auth_enabled()):
+        return await call_next(request)
+    identity = identify(request.headers.get("authorization", ""))
+    if identity is None:
         return JSONResponse(
             status_code=401,
             content={"detail": "Authentication required"},
             headers={"WWW-Authenticate": 'Basic realm="SAEMS", charset="UTF-8"'},
         )
+    request.state.username, request.state.auth_method = identity
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
     return response
+
+
+@app.post("/auth/login")
+def login(credentials: LoginRequest, request: Request):
+    """Exchange the admin user/password for a session bearer token."""
+    if not ADMIN_PASSWORD_HASH:
+        raise HTTPException(503, "Login is not configured on this server "
+                                 "(run: python auth.py set-password)")
+    client = request.client.host if request.client else "unknown"
+    wait = login_throttle.retry_after(client)
+    if wait:
+        raise HTTPException(429, "Too many failed logins; try again later",
+                            headers={"Retry-After": str(wait)})
+    if not check_admin_password(credentials.username, credentials.password):
+        login_throttle.failure(client)
+        raise HTTPException(401, "Wrong username or password")
+    login_throttle.success(client)
+    token, expires_at = sessions.create(credentials.username)
+    return {"access_token": token, "token_type": "bearer",
+            "expires_at": expires_at, "username": credentials.username}
+
+
+@app.post("/auth/logout")
+def logout(request: Request):
+    """Revoke the session token used for this request (no-op for API token)."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    revoked = scheme.lower() == "bearer" and sessions.revoke(value)
+    return {"status": "logged_out" if revoked else "no_session"}
+
+
+@app.get("/auth/me")
+def whoami(request: Request):
+    return {"username": getattr(request.state, "username", None),
+            "method": getattr(request.state, "auth_method", "none"),
+            "login_configured": bool(ADMIN_PASSWORD_HASH)}
 
 
 def latest_rows(connection):
@@ -118,6 +214,8 @@ def row_to_telemetry(row):
         key: raw[key] for key in (
             "schema_version", "data_mode", "sensor_health", "sensor_status",
             "uptime_ms", "uptime_s", "timestamp_source", "soil_raw", "soil_digital",
+            "config_version", "alarm_mask", "battery_source", "battery_state",
+            "pump_reason", "queue_dropped",
         ) if isinstance(raw, dict) and key in raw
     }
     return {
@@ -152,13 +250,15 @@ def is_online(last_seen: str) -> bool:
         return False
 
 
-def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
-    if not MQTT_PASSWORD:
-        raise HTTPException(503, "MQTT_PASSWORD is not configured")
-    if any(character in device_id for character in "/#+ "):
+def validate_device_id(device_id: str) -> None:
+    if not device_id or len(device_id) > 32 or any(
+        character in device_id for character in "/#+ "
+    ):
         raise HTTPException(400, "Invalid device_id")
 
-    topic = f"saems/{device_id}/commands"
+
+def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
+    validate_device_id(device_id)
     payload = json.dumps(
         {
             "command": "pump",
@@ -168,6 +268,12 @@ def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
         },
         separators=(",", ":"),
     )
+    publish_mqtt(f"saems/{device_id}/commands", payload, retain=False)
+
+
+def publish_mqtt(topic: str, payload: str, retain: bool):
+    if not MQTT_PASSWORD:
+        raise HTTPException(503, "MQTT_PASSWORD is not configured")
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=f"saems-api-{uuid4().hex[:12]}",
@@ -180,7 +286,7 @@ def publish_pump_command(device_id: str, command: PumpCommand, request_id: str):
     try:
         client.connect(MQTT_HOST, MQTT_PORT, keepalive=30)
         client.loop_start()
-        info = client.publish(topic, payload, qos=1, retain=False)
+        info = client.publish(topic, payload, qos=1, retain=retain)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             raise HTTPException(503, f"MQTT publish failed: {info.rc}")
         info.wait_for_publish(timeout=5)
@@ -244,6 +350,21 @@ def command_pump(device_id: str, command: PumpCommand):
     }
 
 
+@app.post("/api/v1/devices/{device_id}/commands/battery-sim")
+def command_battery_sim(device_id: str, command: BatterySimCommand):
+    """Demo only: set the battery level of a device built with a simulated
+    battery source. Devices with a real or no battery ignore the command."""
+    validate_device_id(device_id)
+    request_id = uuid4().hex
+    payload = json.dumps(
+        {"command": "battery_sim", "pct": round(command.pct, 1), "request_id": request_id},
+        separators=(",", ":"),
+    )
+    publish_mqtt(f"saems/{device_id}/commands", payload, retain=False)
+    return {"status": "queued", "device_id": device_id, "request_id": request_id,
+            "pct": round(command.pct, 1)}
+
+
 @app.get("/api/v1/devices/{device_id}/status")
 def get_device_status(device_id: str):
     connection = get_connection()
@@ -287,6 +408,48 @@ def get_latest_telemetry(device_id: str):
         connection.close()
 
 
+@app.get("/api/v1/devices/{device_id}/telemetry/hourly")
+def get_hourly_telemetry(
+    device_id: str,
+    limit: int = Query(default=168, ge=1, le=2000),
+    from_hour: Optional[str] = Query(default=None, alias="from"),
+    to_hour: Optional[str] = Query(default=None, alias="to"),
+):
+    """Hourly roll-up (avg/min/max per metric), kept after raw retention.
+
+    from/to compare against the UTC hour key "YYYY-MM-DDTHH".
+    """
+    validate_device_id(device_id)
+    connection = get_connection()
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telemetry_hourly'"
+        ).fetchone()
+        if not exists:
+            return {"device_id": device_id, "count": 0, "items": []}
+        conditions = ["device_id = ?"]
+        parameters: list[Any] = [device_id]
+        if from_hour:
+            conditions.append("hour >= ?")
+            parameters.append(from_hour[:13])
+        if to_hour:
+            conditions.append("hour <= ?")
+            parameters.append(to_hour[:13])
+        rows = connection.execute(
+            f"""
+            SELECT * FROM (
+                SELECT * FROM telemetry_hourly WHERE {' AND '.join(conditions)}
+                ORDER BY hour DESC LIMIT ?
+            ) ORDER BY hour ASC
+            """,
+            [*parameters, limit],
+        ).fetchall()
+        return {"device_id": device_id, "count": len(rows),
+                "items": [dict(row) for row in rows]}
+    finally:
+        connection.close()
+
+
 @app.get("/api/v1/devices/{device_id}/telemetry")
 def get_telemetry(
     device_id: str,
@@ -320,6 +483,135 @@ def get_telemetry(
         }
     finally:
         connection.close()
+
+
+def open_writable_database():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    ensure_schema(connection)
+    return connection
+
+
+def applied_config_version(connection, device_id: str) -> Optional[int]:
+    """Version the device reported in its latest telemetry, if any."""
+    try:
+        row = connection.execute(
+            "SELECT raw_json FROM telemetry WHERE device_id = ? ORDER BY id DESC LIMIT 1",
+            (device_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    try:
+        value = json.loads(row["raw_json"]).get("config_version")
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def configuration_response(connection, device_id: str):
+    version, configuration, updated_at = device_config.load_configuration(
+        connection, device_id
+    )
+    applied = applied_config_version(connection, device_id)
+    if version == 0:
+        sync_state = "not_configured"
+    elif applied is None:
+        sync_state = "unknown"
+    elif applied == version:
+        sync_state = "applied"
+    else:
+        sync_state = "pending"
+    return {
+        "device_id": device_id,
+        "version": version,
+        "applied_version": applied,
+        "sync_state": sync_state,
+        "updated_at": updated_at,
+        "configuration": configuration,
+    }
+
+
+@app.get("/api/v1/devices/{device_id}/configuration")
+def get_configuration(device_id: str):
+    validate_device_id(device_id)
+    connection = open_writable_database()
+    try:
+        return configuration_response(connection, device_id)
+    finally:
+        connection.close()
+
+
+@app.put("/api/v1/devices/{device_id}/configuration")
+def put_configuration(device_id: str, document: dict[str, Any] = Body(...)):
+    """Validate, store and publish the configuration retained over MQTT.
+
+    The database row is committed only after the broker acknowledges the
+    retained publish, so server and device versions cannot diverge.
+    """
+    validate_device_id(device_id)
+    try:
+        configuration = device_config.validate_configuration(document)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    connection = open_writable_database()
+    try:
+        version, _updated_at = device_config.store_configuration(
+            connection, device_id, configuration
+        )
+        payload = json.dumps(
+            device_config.device_document(configuration, version),
+            separators=(",", ":"),
+        )
+        publish_mqtt(f"saems/{device_id}/config", payload, retain=True)
+        connection.commit()
+        return configuration_response(connection, device_id)
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+@app.get("/api/v1/alerts")
+def get_alerts(
+    device_id: Optional[str] = None,
+    state: Optional[Literal["active", "resolved"]] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    if device_id is not None:
+        validate_device_id(device_id)
+    connection = open_writable_database()
+    try:
+        items = alert_engine.list_alerts(connection, device_id, state, limit)
+        return {"count": len(items), "items": items}
+    finally:
+        connection.close()
+
+
+@app.get("/api/v1/devices/{device_id}/alerts")
+def get_device_alerts(
+    device_id: str,
+    state: Optional[Literal["active", "resolved"]] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+):
+    return get_alerts(device_id=device_id, state=state, limit=limit)
+
+
+@app.post("/api/v1/notifications/test")
+def test_notification():
+    if not notifier.configured:
+        raise HTTPException(
+            503, "Telegram is not configured (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)"
+        )
+    sent = notifier.send_now(
+        "🔔 SAEMS: tin nhắn thử nghiệm. Cảnh báo Telegram đã hoạt động."
+    )
+    if not sent:
+        raise HTTPException(502, "Telegram API rejected or did not receive the message")
+    return {"status": "sent"}
 
 
 app.mount(

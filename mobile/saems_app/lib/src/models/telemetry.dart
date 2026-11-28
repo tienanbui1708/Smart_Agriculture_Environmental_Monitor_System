@@ -48,6 +48,12 @@ class Telemetry {
     this.lightLux,
     this.batteryPct,
     this.pumpState,
+    this.pumpReason,
+    this.batterySource,
+    this.batteryState,
+    this.configVersion,
+    this.alarmMask = 0,
+    this.queueDropped = 0,
   });
 
   final int schemaVersion;
@@ -64,6 +70,24 @@ class Telemetry {
   final double? lightLux;
   final double? batteryPct;
   final String? pumpState;
+
+  /// Last pump transition: auto, manual, safety_off, low_battery.
+  final String? pumpReason;
+
+  /// none, adc or simulated.
+  final String? batterySource;
+
+  /// unknown, normal, low or critical.
+  final String? batteryState;
+
+  /// Server configuration version applied on the device (0 = local config).
+  final int? configVersion;
+
+  /// Active threshold alarms; decode with `alarmsFromMask`.
+  final int alarmMask;
+
+  /// Offline records the device lost because its flash log was full.
+  final int queueDropped;
 
   bool isStale([DateTime? now]) {
     final reference = now ?? DateTime.now().toUtc();
@@ -98,6 +122,12 @@ class Telemetry {
       ),
       batteryPct: _percentage(json['battery_pct']),
       pumpState: _string(json['pump_state']),
+      pumpReason: _string(json['pump_reason']),
+      batterySource: _string(json['battery_source']),
+      batteryState: _string(json['battery_state']),
+      configVersion: _integer(json['config_version']),
+      alarmMask: _integer(json['alarm_mask']) ?? 0,
+      queueDropped: _integer(json['queue_dropped']) ?? 0,
     );
   }
 
@@ -116,6 +146,12 @@ class Telemetry {
     'light_lux': lightLux,
     'battery_pct': batteryPct,
     'pump_state': pumpState,
+    'pump_reason': pumpReason,
+    'battery_source': batterySource,
+    'battery_state': batteryState,
+    'config_version': configVersion,
+    'alarm_mask': alarmMask,
+    'queue_dropped': queueDropped,
   };
 
   String encode() => jsonEncode(toJson());

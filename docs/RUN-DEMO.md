@@ -3,7 +3,7 @@
 Chạy PowerShell tại:
 
 ```powershell
-cd 'C:\Users\Tien An\esp\SAEMS_esp32_test\merge_github'
+cd 'E:\Code\C++\ESP32S3_SAEMS\Smart_Agriculture_Environmental_Monitor_System\merge_github'  # đổi theo nơi clone repo
 ```
 
 Tải relay phải được ngắt trong lúc thử. Một firmware chứa cả Direct, Light Sleep

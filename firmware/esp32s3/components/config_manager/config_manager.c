@@ -1,17 +1,53 @@
 #include "config_manager.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
 #include "sdkconfig.h"
 
 #define CONFIG_NAMESPACE "saems_cfg"
+#define CONFIG_DOCUMENT_MAX 1024
+#define THRESHOLD_BLOB_KEY "thresholds"
+#define THRESHOLD_BLOB_VERSION 1U
+#define IRRIGATION_BLOB_KEY "irrigation"
+#define IRRIGATION_BLOB_VERSION 1U
+
+/* Stored layout of the alarm limits. Bump the version when it changes. */
+typedef struct {
+    uint8_t version;
+    uint8_t reserved;
+    uint16_t enabled_mask;
+    float value[THRESHOLD_LIMIT_COUNT];
+} threshold_blob_t;
+
+typedef struct {
+    uint8_t version;
+    uint8_t enabled;
+    uint8_t start_below_pct;
+    uint8_t reserved;
+    uint16_t max_runtime_s;
+    uint16_t reserved2;
+    uint32_t min_rest_s;
+} irrigation_blob_t;
+
+/* Keys the server must never change over MQTT. */
+static const char *const remote_forbidden_keys[] = {
+    "device_id",      "wifi_ssid",        "wifi_password",
+    "mqtt_uri",       "mqtt_username",    "mqtt_password",
+    "ap_ssid",        "ap_password",      "soil_dry_raw",
+    "soil_wet_raw",   "soil_enabled",     "soil_calibrated",
+    "ap_enabled",     "ble_enabled",      "power_save_enabled",
+    "ap_api_token",   "ble_passkey",
+};
 
 const char *saems_power_mode_name(saems_power_mode_t mode)
 {
@@ -177,6 +213,133 @@ static esp_err_t parse_optional_string(
     return ESP_OK;
 }
 
+static esp_err_t parse_optional_thresholds(
+    const char *json, threshold_limits_t *limits)
+{
+    const char *position = json_value(json, "thresholds");
+    if (position == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    threshold_limits_t parsed;
+    if (!threshold_limits_from_json(position, &parsed) ||
+        !threshold_limits_are_valid(&parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *limits = parsed;
+    return ESP_OK;
+}
+
+static esp_err_t parse_optional_irrigation(
+    const char *json, irrigation_config_t *irrigation)
+{
+    const char *position = json_value(json, "irrigation");
+    if (position == NULL) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    irrigation_config_t parsed;
+    if (!irrigation_config_from_json(position, &parsed)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *irrigation = parsed;
+    return ESP_OK;
+}
+
+static bool irrigation_equal(
+    const irrigation_config_t *left, const irrigation_config_t *right)
+{
+    return left->enabled == right->enabled &&
+           left->start_below_pct == right->start_below_pct &&
+           left->max_runtime_s == right->max_runtime_s &&
+           left->min_rest_s == right->min_rest_s;
+}
+
+static bool thresholds_equal(
+    const threshold_limits_t *left, const threshold_limits_t *right)
+{
+    for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
+        if (left->enabled[index] != right->enabled[index] ||
+            (left->enabled[index] &&
+             left->value[index] != right->value[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool server_managed_changed(
+    const saems_config_t *before, const saems_config_t *after)
+{
+    return before->telemetry_interval_s != after->telemetry_interval_s ||
+           before->power_mode != after->power_mode ||
+           !thresholds_equal(&before->thresholds, &after->thresholds) ||
+           !irrigation_equal(&before->irrigation, &after->irrigation);
+}
+
+static void load_thresholds(nvs_handle_t handle, threshold_limits_t *limits)
+{
+    threshold_blob_t blob;
+    size_t blob_size = sizeof(blob);
+    if (nvs_get_blob(handle, THRESHOLD_BLOB_KEY, &blob, &blob_size) != ESP_OK ||
+        blob_size != sizeof(blob) || blob.version != THRESHOLD_BLOB_VERSION) {
+        return;
+    }
+    threshold_limits_t stored;
+    for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
+        stored.enabled[index] = (blob.enabled_mask & (1U << index)) != 0U;
+        stored.value[index] = blob.value[index];
+    }
+    if (threshold_limits_are_valid(&stored)) {
+        *limits = stored;
+    }
+}
+
+static esp_err_t save_thresholds(
+    nvs_handle_t handle, const threshold_limits_t *limits)
+{
+    threshold_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.version = (uint8_t)THRESHOLD_BLOB_VERSION;
+    for (size_t index = 0U; index < THRESHOLD_LIMIT_COUNT; index++) {
+        if (limits->enabled[index]) {
+            blob.enabled_mask = (uint16_t)(blob.enabled_mask | (1U << index));
+        }
+        blob.value[index] = limits->value[index];
+    }
+    return nvs_set_blob(handle, THRESHOLD_BLOB_KEY, &blob, sizeof(blob));
+}
+
+static void load_irrigation(nvs_handle_t handle, irrigation_config_t *config)
+{
+    irrigation_blob_t blob;
+    size_t blob_size = sizeof(blob);
+    if (nvs_get_blob(handle, IRRIGATION_BLOB_KEY, &blob, &blob_size) != ESP_OK ||
+        blob_size != sizeof(blob) || blob.version != IRRIGATION_BLOB_VERSION) {
+        return;
+    }
+    const irrigation_config_t stored = {
+        .enabled = blob.enabled != 0U,
+        .start_below_pct = blob.start_below_pct,
+        .max_runtime_s = blob.max_runtime_s,
+        .min_rest_s = blob.min_rest_s,
+    };
+    if (irrigation_config_is_valid(&stored)) {
+        *config = stored;
+    }
+}
+
+static esp_err_t save_irrigation(
+    nvs_handle_t handle, const irrigation_config_t *config)
+{
+    irrigation_blob_t blob;
+    memset(&blob, 0, sizeof(blob));
+    blob.version = (uint8_t)IRRIGATION_BLOB_VERSION;
+    blob.enabled = config->enabled ? 1U : 0U;
+    blob.start_below_pct = config->start_below_pct;
+    blob.max_runtime_s = config->max_runtime_s;
+    blob.min_rest_s = config->min_rest_s;
+    return nvs_set_blob(handle, IRRIGATION_BLOB_KEY, &blob, sizeof(blob));
+}
+
 static esp_err_t save_locked(config_manager_t *manager)
 {
     nvs_handle_t handle;
@@ -246,6 +409,22 @@ static esp_err_t save_locked(config_manager_t *manager)
             handle, "power_mode", (uint8_t)manager->current.power_mode);
     }
     if (result == ESP_OK) {
+        result = save_thresholds(handle, &manager->current.thresholds);
+    }
+    if (result == ESP_OK) {
+        result = save_irrigation(handle, &manager->current.irrigation);
+    }
+    if (result == ESP_OK) {
+        result = nvs_set_u32(
+            handle, "cfg_ver", manager->current.config_version);
+    }
+    if (result == ESP_OK) {
+        result = nvs_set_str(handle, "ap_token", manager->current.ap_api_token);
+    }
+    if (result == ESP_OK) {
+        result = nvs_set_u32(handle, "ble_pk", manager->current.ble_passkey);
+    }
+    if (result == ESP_OK) {
         result = nvs_commit(handle);
     }
     nvs_close(handle);
@@ -290,9 +469,18 @@ esp_err_t config_manager_init(
         load_i32(handle, "soil_dry", &manager->current.soil_dry_raw);
         load_i32(handle, "soil_wet", &manager->current.soil_wet_raw);
         load_bool(handle, "soil_on", &manager->current.soil_enabled);
-        /* Missing key means uncalibrated; old placeholder endpoints must not
-         * silently become a measured percentage after a firmware upgrade. */
-        load_bool(handle, "soil_cal", &manager->current.soil_calibrated);
+        /* A missing key keeps the build default only while the endpoints
+         * are the build's measured ones; old placeholder endpoints stored
+         * by earlier firmware must not silently become a percentage. */
+        uint8_t stored_calibrated = 0U;
+        if (nvs_get_u8(handle, "soil_cal", &stored_calibrated) == ESP_OK) {
+            manager->current.soil_calibrated = stored_calibrated != 0U;
+        } else {
+            manager->current.soil_calibrated =
+                defaults->soil_calibrated &&
+                (manager->current.soil_dry_raw == defaults->soil_dry_raw) &&
+                (manager->current.soil_wet_raw == defaults->soil_wet_raw);
+        }
         load_bool(handle, "ap_on", &manager->current.ap_enabled);
         load_bool(handle, "ble_on", &manager->current.ble_enabled);
         load_bool(handle, "power_save", &manager->current.power_save_enabled);
@@ -302,13 +490,60 @@ esp_err_t config_manager_init(
             manager->current.power_mode =
                 (saems_power_mode_t)stored_power_mode;
         }
+        load_thresholds(handle, &manager->current.thresholds);
+        load_irrigation(handle, &manager->current.irrigation);
+        load_u32(handle, "cfg_ver", &manager->current.config_version);
+        load_string(handle, "ap_token", manager->current.ap_api_token,
+                    sizeof(manager->current.ap_api_token));
+        load_u32(handle, "ble_pk", &manager->current.ble_passkey);
         nvs_close(handle);
     } else if (result != ESP_ERR_NVS_NOT_FOUND) {
         return result;
     }
 
+    if (manager->current.ble_passkey < SAEMS_BLE_PASSKEY_MIN ||
+        manager->current.ble_passkey > SAEMS_BLE_PASSKEY_MAX) {
+        /* First boot with passkey pairing: pick a random 6-digit passkey
+         * and keep it, so bonded phones and the printed value stay valid. */
+        manager->current.ble_passkey =
+            SAEMS_BLE_PASSKEY_MIN +
+            esp_random() % (SAEMS_BLE_PASSKEY_MAX - SAEMS_BLE_PASSKEY_MIN + 1U);
+        nvs_handle_t write_handle;
+        if (nvs_open(CONFIG_NAMESPACE, NVS_READWRITE, &write_handle) == ESP_OK) {
+            (void)nvs_set_u32(write_handle, "ble_pk", manager->current.ble_passkey);
+            (void)nvs_commit(write_handle);
+            nvs_close(write_handle);
+        }
+    }
+
     manager->initialized = true;
     return ESP_OK;
+}
+
+bool config_manager_check_api_token(config_manager_t *manager, const char *token)
+{
+    if (manager == NULL || token == NULL || !manager->initialized) {
+        return false;
+    }
+    char expected[SAEMS_API_TOKEN_MAX_LEN + 1];
+    xSemaphoreTake(manager_mutex(manager), portMAX_DELAY);
+    (void)snprintf(expected, sizeof(expected), "%s",
+                   manager->current.ap_api_token[0] != '\0'
+                       ? manager->current.ap_api_token
+                       : manager->current.ap_password);
+    xSemaphoreGive(manager_mutex(manager));
+    const size_t expected_length = strlen(expected);
+    const size_t token_length = strnlen(token, SAEMS_API_TOKEN_MAX_LEN + 1U);
+    if (expected_length < SAEMS_WIFI_PASSWORD_MIN_LEN ||
+        token_length != expected_length) {
+        return false;
+    }
+    /* Constant time over the expected length. */
+    unsigned char difference = 0U;
+    for (size_t index = 0U; index < expected_length; index++) {
+        difference |= (unsigned char)(expected[index] ^ token[index]);
+    }
+    return difference == 0U;
 }
 
 esp_err_t config_manager_get(
@@ -331,10 +566,10 @@ esp_err_t config_manager_update_json(
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (json_length >= 1024) {
+    if (json_length >= CONFIG_DOCUMENT_MAX) {
         return ESP_ERR_INVALID_SIZE;
     }
-    char document[1024];
+    char document[CONFIG_DOCUMENT_MAX];
     memcpy(document, json, json_length);
     document[json_length] = '\0';
     if (strchr(document, '{') == NULL || strchr(document, '}') == NULL) {
@@ -395,7 +630,27 @@ esp_err_t config_manager_update_json(
         xSemaphoreGive(manager_mutex(manager));
         return parse_result;
     }
+    parse_result = parse_optional_string(
+        document, "ap_api_token", updated.ap_api_token,
+        sizeof(updated.ap_api_token));
+    if (parse_result == ESP_OK && updated.ap_api_token[0] != '\0' &&
+        strlen(updated.ap_api_token) < SAEMS_WIFI_PASSWORD_MIN_LEN) {
+        parse_result = ESP_ERR_INVALID_ARG;
+    }
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
     int parsed = 0;
+    parse_result = parse_optional_int(
+        document, "ble_passkey", (int)SAEMS_BLE_PASSKEY_MIN,
+        (int)SAEMS_BLE_PASSKEY_MAX, &parsed);
+    if (parse_result == ESP_OK) {
+        updated.ble_passkey = (uint32_t)parsed;
+    } else if (parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
     parse_result = parse_optional_int(
         document, "telemetry_interval_s", 1, 3600, &parsed);
     if (parse_result == ESP_OK) {
@@ -472,7 +727,28 @@ esp_err_t config_manager_update_json(
         xSemaphoreGive(manager_mutex(manager));
         return parse_result;
     }
+    parse_result = parse_optional_thresholds(document, &updated.thresholds);
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
+    parse_result = parse_optional_irrigation(document, &updated.irrigation);
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
+    /* A local (BLE/AP) change to a server-managed value is no longer the
+     * server's version; the retained server config re-applies on reconnect. */
+    if (server_managed_changed(&manager->current, &updated)) {
+        updated.config_version = 0U;
+    }
 
+    /* Station networks must use WPA2-PSK (or better): no open/WEP. */
+    if (updated.wifi_ssid[0] != '\0' &&
+        strlen(updated.wifi_password) < SAEMS_WIFI_PASSWORD_MIN_LEN) {
+        xSemaphoreGive(manager_mutex(manager));
+        return ESP_ERR_INVALID_ARG;
+    }
     if (updated.device_id[0] == '\0' ||
         (updated.ap_enabled &&
          (updated.ap_ssid[0] == '\0' || strlen(updated.ap_password) < 8)) ||
@@ -488,6 +764,82 @@ esp_err_t config_manager_update_json(
     return result;
 }
 
+esp_err_t config_manager_update_remote_json(
+    config_manager_t *manager,
+    const char *json,
+    size_t json_length,
+    bool *applied)
+{
+    if (applied != NULL) {
+        *applied = false;
+    }
+    if (manager == NULL || json == NULL || json_length == 0 ||
+        applied == NULL || !manager->initialized) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (json_length >= CONFIG_DOCUMENT_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    char document[CONFIG_DOCUMENT_MAX];
+    memcpy(document, json, json_length);
+    document[json_length] = '\0';
+    if (strchr(document, '{') == NULL || strchr(document, '}') == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t index = 0U;
+         index < sizeof(remote_forbidden_keys) / sizeof(remote_forbidden_keys[0]);
+         index++) {
+        if (json_value(document, remote_forbidden_keys[index]) != NULL) {
+            return ESP_ERR_NOT_ALLOWED;
+        }
+    }
+    int version = 0;
+    if (parse_optional_int(document, "config_version", 1, INT_MAX, &version) !=
+        ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(manager_mutex(manager), portMAX_DELAY);
+    if ((uint32_t)version == manager->current.config_version) {
+        xSemaphoreGive(manager_mutex(manager));
+        return ESP_OK;
+    }
+    saems_config_t updated = manager->current;
+    int parsed = 0;
+    esp_err_t parse_result = parse_optional_int(
+        document, "telemetry_interval_s", 1, 3600, &parsed);
+    if (parse_result == ESP_OK) {
+        updated.telemetry_interval_s = (uint32_t)parsed;
+    }
+    if (parse_result == ESP_OK || parse_result == ESP_ERR_NOT_FOUND) {
+        char power_mode[16];
+        parse_result = parse_optional_string(
+            document, "power_mode", power_mode, sizeof(power_mode));
+        if (parse_result == ESP_OK) {
+            parse_result = saems_power_mode_from_string(
+                power_mode, &updated.power_mode);
+        }
+    }
+    if (parse_result == ESP_OK || parse_result == ESP_ERR_NOT_FOUND) {
+        parse_result = parse_optional_thresholds(
+            document, &updated.thresholds);
+    }
+    if (parse_result == ESP_OK || parse_result == ESP_ERR_NOT_FOUND) {
+        parse_result = parse_optional_irrigation(
+            document, &updated.irrigation);
+    }
+    if (parse_result != ESP_OK && parse_result != ESP_ERR_NOT_FOUND) {
+        xSemaphoreGive(manager_mutex(manager));
+        return parse_result;
+    }
+    updated.config_version = (uint32_t)version;
+    manager->current = updated;
+    esp_err_t result = save_locked(manager);
+    xSemaphoreGive(manager_mutex(manager));
+    *applied = result == ESP_OK;
+    return result;
+}
+
 esp_err_t config_manager_to_json(
     config_manager_t *manager, char *output, size_t output_size)
 {
@@ -499,6 +851,19 @@ esp_err_t config_manager_to_json(
     ESP_RETURN_ON_ERROR(config_manager_get(manager, &config),
                         "CONFIG_MANAGER",
                         "get config");
+    char thresholds[THRESHOLD_LIMIT_COUNT * 10U + 4U];
+    if (threshold_limits_to_json(
+            &config.thresholds, thresholds, sizeof(thresholds)) < 0) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    char irrigation[48];
+    const int irrigation_length = irrigation_config_to_json(
+        &config.irrigation, irrigation, sizeof(irrigation));
+    if (irrigation_length < 0 || (size_t)irrigation_length >= sizeof(irrigation)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    /* Keep this document below the 512-byte BLE attribute read limit
+     * (worst case 495 bytes: 32-char device_id, every limit set). */
     int length = snprintf(
         output,
         output_size,
@@ -509,8 +874,9 @@ esp_err_t config_manager_to_json(
         "\"ble_enabled\":%s,\"power_save_enabled\":%s,"
         "\"power_mode\":\"%s\","
         "\"wifi_configured\":%s,\"mqtt_configured\":%s,"
-        "\"ap_password_configured\":%s,\"restart_required\":true,"
-        "\"power_mode_applies_next_cycle\":true}",
+        "\"ap_password_configured\":%s,"
+        "\"config_version\":%" PRIu32 ",\"thresholds\":%s,"
+        "\"irrigation\":%s}",
         config.device_id,
         config.telemetry_interval_s,
         config.soil_dry_raw,
@@ -528,7 +894,10 @@ esp_err_t config_manager_to_json(
         saems_power_mode_name(config.power_mode),
         config.wifi_ssid[0] != '\0' ? "true" : "false",
         config.mqtt_uri[0] != '\0' ? "true" : "false",
-        strlen(config.ap_password) >= 8 ? "true" : "false");
+        strlen(config.ap_password) >= 8 ? "true" : "false",
+        config.config_version,
+        thresholds,
+        irrigation);
     if (length < 0 || (size_t)length >= output_size) {
         output[0] = '\0';
         return ESP_ERR_INVALID_SIZE;

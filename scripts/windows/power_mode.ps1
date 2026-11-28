@@ -18,8 +18,16 @@ if (-not $saemsApAddress) {
     throw 'Laptop is not connected to the ESP32 AP. Join SAEMS-farm-01 first, then retry.'
 }
 
+# The device REST API needs its token (default: the AP Wi-Fi password).
+$saemsToken = $env:SAEMS_DEVICE_TOKEN
+if (-not $saemsToken) {
+    $saemsSecure = Read-Host -AsSecureString 'Device token (AP password unless changed)'
+    $saemsToken = [System.Net.NetworkCredential]::new('', $saemsSecure).Password
+}
+$saemsHeaders = @{ Authorization = "Bearer $saemsToken" }
+
 try {
-    $saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -TimeoutSec 10
+    $saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -Headers $saemsHeaders -TimeoutSec 10
 } catch {
     throw "Cannot read ESP32 config at $saemsBase. In Battery mode, retry during the awake window. Details: $($_.Exception.Message)"
 }
@@ -43,13 +51,13 @@ if ($Action -eq 'Set') {
         Write-Warning 'Battery mode works with the current interval, but 60 seconds or more is recommended for useful Deep Sleep time.'
     }
     $saemsJson = $saemsBody | ConvertTo-Json -Compress
-    Invoke-RestMethod "$saemsBase/v1/config" -Method Put `
+    Invoke-RestMethod "$saemsBase/v1/config" -Headers $saemsHeaders -Method Put `
         -ContentType 'application/json' -Body $saemsJson -TimeoutSec 10 | Out-Null
-    $saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -TimeoutSec 10
+    $saemsConfig = Invoke-RestMethod "$saemsBase/v1/config" -Headers $saemsHeaders -TimeoutSec 10
     if ($saemsConfig.power_mode -ne $saemsRequestedMode) {
         throw "Power mode readback is '$($saemsConfig.power_mode)', not '$saemsRequestedMode'."
     }
     Write-Output "Power mode '$saemsRequestedMode' persisted. It applies at the next sample boundary; no rebuild or reflash is needed."
 }
 
-$saemsConfig | Select-Object device_id,power_mode,telemetry_interval_s,power_mode_applies_next_cycle,ap_enabled,ble_enabled
+$saemsConfig | Select-Object device_id,power_mode,telemetry_interval_s,config_version,ap_enabled,ble_enabled

@@ -25,10 +25,21 @@ message_id_hi | message_id_lo | frame_index | frame_total | UTF-8 bytes...
 - Index starts at zero and must be smaller than `frame_total`.
 - An incomplete message expires after five seconds.
 - Commands reuse the JSON body used by the server pump endpoint.
+  A second command, `{"command":"battery_sim","pct":15}`, sets the simulated
+  battery level on firmware built with `SAEMS_BATTERY_SOURCE_SIMULATED`
+  (others answer an error). On AP it is posted to `/v1/commands/pump` too.
 
 ## Wi-Fi AP REST
 
 Default base URL: `http://192.168.4.1`.
+
+Security (see `docs/security.md`): requests are served only when they arrive on
+the AP address (others get 403), and every endpoint except `/v1/health` needs
+`Authorization: Bearer <device token>` (default: the AP Wi-Fi password, or
+`ap_api_token` when set). BLE telemetry/config/command characteristics need an
+authenticated passkey pairing; `device_info` reports `"pairing":"passkey"`.
+Config writes accept write-only `ap_api_token` (8-64 chars) and `ble_passkey`
+(6 digits); neither is ever returned nor accepted over MQTT.
 
 | Method | Path |
 | --- | --- |
@@ -40,6 +51,11 @@ Default base URL: `http://192.168.4.1`.
 | PUT | `/v1/config` |
 | POST | `/v1/commands/pump` |
 
+`/v1/telemetry/history?limit=N` (N <= 10) returns the N most recent records
+kept in the flash log (sent or not), oldest first, with `pending_count` and
+`dropped_count`. `/v1/status` reports `pending_records`, `dropped_records` and
+`storage` (`flash_log`, or `nvs` when the partition is missing).
+
 Config writes may contain Wi-Fi/MQTT/AP credentials and manager settings. Secret
 values are persisted but never returned by `GET /v1/config`. Transport and sensor
 changes become fully active after device restart.
@@ -50,6 +66,12 @@ restart rule: it is re-read and applied at the next sampling boundary. Battery
 mode keeps a short awake maintenance window for BLE/AP and sync, then enters
 timer Deep Sleep. An active BLE connection postpones Deep Sleep so the app can
 finish configuration; disconnect after saving Battery mode.
+
+Thresholds and automatic watering are runtime values like `power_mode`:
+`thresholds` is a 9-number array (`null` = off) and `irrigation` is
+`[enabled 0/1, start_below_pct 1..95, max_runtime_s 1..3600, min_rest_s 0..86400]`.
+Both stay compact so `GET /v1/config` and the BLE config read fit the 512-byte
+ATT limit (worst case 495 bytes). See `docs/pump-battery.md`.
 
 Soil calibration: config exposes `soil_calibrated` and build-time
 `soil_raw_readout_enabled`. To confirm measured calibration, send

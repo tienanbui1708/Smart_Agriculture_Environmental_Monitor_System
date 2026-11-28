@@ -14,12 +14,39 @@ emitted by the server are optional so existing ESP32 payloads remain compatible.
 | GET | `/api/v1/devices/{device_id}/telemetry/latest` | Latest telemetry object |
 | GET | `/api/v1/devices/{device_id}/telemetry?limit=100&from=&to=` | Ordered history |
 | POST | `/api/v1/devices/{device_id}/commands/pump` | Queue MQTT pump command |
+| GET/PUT | `/api/v1/devices/{device_id}/configuration` | Server-managed thresholds, interval, power mode, auto watering (PUT replaces the whole document and publishes it retained on `saems/{id}/config`) |
+| GET | `/api/v1/alerts?state=active` | Threshold/connectivity alerts of all devices |
+| GET | `/api/v1/devices/{device_id}/alerts` | Alerts of one device |
+| POST | `/api/v1/notifications/test` | Send a Telegram test message |
+| POST | `/api/v1/devices/{device_id}/commands/battery-sim` | Demo: set a simulated battery level `{"pct": 15}` |
 
 Pump command body:
 
 ```json
 {"state":"on","duration_s":60}
 ```
+
+Configuration body (every key optional; `null` = not managed by the server):
+
+```json
+{
+  "telemetry_interval_s": 300,
+  "power_mode": "light",
+  "offline_alert_after_s": null,
+  "thresholds": {"temperature_c": {"min": 10, "max": 35}, "battery_pct": {"min": 20}},
+  "auto_watering": {"enabled": true, "soil_moisture_threshold_pct": 30,
+                    "pump_max_runtime_sec": 30, "pump_min_rest_sec": 1800}
+}
+```
+
+Telemetry MQTT messages are either one record or an offline batch
+`{"batch":[record, ...]}` (at most 64 records, the firmware sends 8) on the same
+`saems/{id}/telemetry` topic; duplicates by `(device_id, boot_id, seq)` are
+ignored (see `docs/offline-storage.md`).
+
+The device receives the compact form on MQTT: `thresholds` as a 9-number array
+and `irrigation` as `[enabled, threshold_pct, max_runtime_s, min_rest_s]`
+(see `firmware/esp32s3/components/{threshold_monitor,irrigation}`).
 
 ## Telemetry schema v1
 
@@ -38,6 +65,12 @@ reported as a real zero:
 
 - `temperature_c`, `humidity_pct`, `soil_moisture_pct`, `light_lux`
 - `battery_pct`, `pump_state`
+- `battery_source` (`none`/`adc`/`simulated`), `battery_state`
+  (`unknown`/`normal`/`low`/`critical`), `pump_reason` (`auto`/`manual`/
+  `safety_off`/`low_battery`/`null`) — see `docs/pump-battery.md`
+- `queue_dropped`: unsent records lost because the device flash log was full
+- `config_version` (server configuration applied, `0` = local) and `alarm_mask`
+  (threshold alarm bits, order in `threshold_monitor.h`)
 - `sensor_health`: `ok`, `degraded`, or `unavailable`
 - `sensor_status`: trạng thái `dht20`, `bh1750`, `soil` riêng lẻ; mỗi giá trị là
   `ok`, `error`, `unavailable`, hoặc `uncalibrated` (soil đọc được ADC nhưng chưa

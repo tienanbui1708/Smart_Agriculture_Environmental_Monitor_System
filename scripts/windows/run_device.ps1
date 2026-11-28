@@ -94,7 +94,25 @@ function Prepare-SaemsConfig {
     if ($LASTEXITCODE -ne 0) { Stop-Saems 'Could not prepare private sdkconfig.' }
 }
 
+# CMake refuses a build directory generated for another source path (the
+# repository was moved to another folder). build-internet only holds
+# generated files, so rebuild it from scratch in that case.
+function Reset-SaemsStaleBuild {
+    $saemsCache = Join-Path $saemsBuild 'CMakeCache.txt'
+    if (-not (Test-Path -LiteralPath $saemsCache)) { return }
+    $saemsLine = Select-String -LiteralPath $saemsCache -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' |
+        Select-Object -First 1
+    if (-not $saemsLine) { return }
+    $saemsCached = [System.IO.Path]::GetFullPath($saemsLine.Matches[0].Groups[1].Value).TrimEnd('\', '/')
+    $saemsCurrent = [System.IO.Path]::GetFullPath($saemsFirmware).TrimEnd('\', '/')
+    if ($saemsCached -ne $saemsCurrent) {
+        Write-Host "Build cache was generated for $saemsCached; removing generated build-internet."
+        Remove-Item -LiteralPath $saemsBuild -Recurse -Force
+    }
+}
+
 function Build-SaemsFirmware {
+    Reset-SaemsStaleBuild
     Prepare-SaemsConfig
     $saemsIdfArgs = @('-B', 'build-internet', 'build')
     Start-SaemsIdf -saemsArguments $saemsIdfArgs

@@ -5,6 +5,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "irrigation.h"
+#include "threshold_monitor.h"
 
 #define SAEMS_DEVICE_ID_MAX_LEN 32
 #define SAEMS_WIFI_SSID_MAX_LEN 32
@@ -12,6 +14,11 @@
 #define SAEMS_URI_MAX_LEN 128
 #define SAEMS_MQTT_USERNAME_MAX_LEN 64
 #define SAEMS_MQTT_PASSWORD_MAX_LEN 64
+#define SAEMS_API_TOKEN_MAX_LEN 64
+/* WPA2-PSK needs 8..63 characters; open/WEP networks are refused. */
+#define SAEMS_WIFI_PASSWORD_MIN_LEN 8
+#define SAEMS_BLE_PASSKEY_MIN 100000U
+#define SAEMS_BLE_PASSKEY_MAX 999999U
 
 typedef enum {
     SAEMS_POWER_MODE_DIRECT = 0,
@@ -28,6 +35,11 @@ typedef struct {
     char mqtt_password[SAEMS_MQTT_PASSWORD_MAX_LEN + 1];
     char ap_ssid[SAEMS_WIFI_SSID_MAX_LEN + 1];
     char ap_password[SAEMS_WIFI_PASSWORD_MAX_LEN + 1];
+    /* Bearer token for the AP REST API; empty means "use ap_password".
+     * Write-only: never returned by config_manager_to_json. */
+    char ap_api_token[SAEMS_API_TOKEN_MAX_LEN + 1];
+    /* 6-digit BLE pairing passkey; generated once per device. Secret. */
+    uint32_t ble_passkey;
     uint32_t telemetry_interval_s;
     int soil_dry_raw;
     int soil_wet_raw;
@@ -37,6 +49,13 @@ typedef struct {
     bool ble_enabled;
     bool power_save_enabled;
     saems_power_mode_t power_mode;
+    /* Alarm limits; see threshold_monitor.h for the array order. */
+    threshold_limits_t thresholds;
+    /* Automatic watering; see irrigation.h for the "irrigation" array. */
+    irrigation_config_t irrigation;
+    /* Version of the server-managed configuration last applied. 0 means
+     * the device runs local (BLE/AP) settings not confirmed by the server. */
+    uint32_t config_version;
 } saems_config_t;
 
 typedef struct {
@@ -53,6 +72,22 @@ esp_err_t config_manager_update_json(
     config_manager_t *manager,
     const char *json,
     size_t json_length);
+/*
+ * Apply a server-managed configuration received over MQTT. Only
+ * config_version, telemetry_interval_s, power_mode, thresholds and
+ * irrigation are accepted; credentials, network and calibration keys are rejected with
+ * ESP_ERR_NOT_ALLOWED. A document whose config_version equals the stored
+ * version is acknowledged without rewriting NVS (retained redelivery).
+ * *applied is set to true only when the stored configuration changed.
+ */
+esp_err_t config_manager_update_remote_json(
+    config_manager_t *manager,
+    const char *json,
+    size_t json_length,
+    bool *applied);
+/* Constant-time check of an AP REST bearer token. */
+bool config_manager_check_api_token(config_manager_t *manager, const char *token);
+
 esp_err_t config_manager_to_json(
     config_manager_t *manager,
     char *output,
