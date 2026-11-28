@@ -9,6 +9,7 @@ gồm ba phần:
 - Ứng dụng Flutter: xem dữ liệu qua server hoặc kết nối trực tiếp BLE/Wi-Fi AP.
 
 Ba phần dùng chung một hợp đồng dữ liệu ([`docs/api-contract.md`](docs/api-contract.md)).
+Mới clone repo: xem cần cài gì ở [SETUP.md](SETUP.md).
 
 ```text
 firmware/esp32s3/       Firmware ESP-IDF 6.0.3 cho ESP32-S3-DevKitC N16R8
